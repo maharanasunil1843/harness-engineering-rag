@@ -11,10 +11,10 @@ load_dotenv()
 def check(label: str, fn):
     try:
         result = fn()
-        print(f"  {label}")
+        print(f"  ✅ {label}")
         return result
     except Exception as exc:
-        print(f"  {label}")
+        print(f"  ❌ {label}")
         print(f"    ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -83,9 +83,9 @@ def check_langsmith():
 
 if __name__ == "__main__":
     print("Running smoke tests…\n")
-    check("✅ (a) Postgres + pgvector", check_postgres)
-    check("✅ (b) Anthropic LLM", check_anthropic)
-    check("✅ (c) OpenAI embeddings", check_openai_embeddings)
-    check("✅ (d) Upstash Redis round-trip", check_upstash_redis)
-    check("✅ (e) LangSmith API key present", check_langsmith)
+    check("(a) Postgres + pgvector", check_postgres)
+    check("(b) Anthropic LLM", check_anthropic)
+    check("(c) OpenAI embeddings", check_openai_embeddings)
+    check("(d) Upstash Redis round-trip", check_upstash_redis)
+    check("(e) LangSmith API key present", check_langsmith)
     print("\n🟢 All systems go.")
