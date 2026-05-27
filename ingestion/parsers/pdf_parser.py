@@ -1,29 +1,67 @@
 """PyMuPDF-based PDF parser with table and figure extraction."""
+import statistics
 from pathlib import Path
 
 import fitz  # PyMuPDF
 
 from ingestion.elements import Element, ParsedDoc
 
+_HEADING_SIZE_MULTIPLIER = 1.15  # must be >= this × median body size
+_HEADING_MAX_CHARS = 120
+_HEADING_SIZE_P90_PERCENTILE = 0.90  # "top 10%" threshold
+_SENTENCE_ENDINGS = {".", "!", "?", ":"}
+_MIN_TEXT_CHARS = 20  # drop blocks shorter than this unless heading
+
+
+def _is_bold(span: dict) -> bool:
+    # PyMuPDF span flags: bit 4 (value 16) = bold
+    return bool(span.get("flags", 0) & 16)
+
+
+def _classify_heading(
+    text: str,
+    max_size: float,
+    span_bold: bool,
+    median_size: float,
+    p90_size: float,
+) -> bool:
+    """Return True only if ALL five heading criteria are satisfied."""
+    if max_size < _HEADING_SIZE_MULTIPLIER * median_size:
+        return False
+    if len(text) > _HEADING_MAX_CHARS:
+        return False
+    if text and text[-1] in _SENTENCE_ENDINGS:
+        return False
+    if not (span_bold or max_size >= p90_size):
+        return False
+    if not any(c.isalpha() for c in text):
+        return False
+    return True
+
 
 def parse_pdf(path: Path) -> ParsedDoc:
     doc = fitz.open(str(path))
 
-    # Collect all font sizes to determine heading threshold (top 20%)
+    # ── First pass: collect font statistics ──────────────────────────────────
     all_sizes: list[float] = []
     for page in doc:
-        blocks = page.get_text("dict")["blocks"]
-        for block in blocks:
+        for block in page.get_text("dict")["blocks"]:
             if block.get("type") != 0:
                 continue
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
-                    all_sizes.append(span["size"])
+                    s = span.get("size", 0)
+                    if s > 0:
+                        all_sizes.append(s)
 
-    all_sizes.sort()
-    heading_threshold = (
-        all_sizes[int(len(all_sizes) * 0.80)] if all_sizes else 14.0
-    )
+    if all_sizes:
+        median_size = statistics.median(all_sizes)
+        sorted_sizes = sorted(all_sizes)
+        p90_idx = max(0, int(len(sorted_sizes) * _HEADING_SIZE_P90_PERCENTILE) - 1)
+        p90_size = sorted_sizes[p90_idx]
+    else:
+        median_size = 10.0
+        p90_size = 14.0
 
     title = doc.metadata.get("title", "").strip() or path.stem
     author = doc.metadata.get("author", "").strip() or None
@@ -35,12 +73,12 @@ def parse_pdf(path: Path) -> ParsedDoc:
     elements: list[Element] = []
     fig_n = 0
 
+    # ── Second pass: extract elements ────────────────────────────────────────
     for page_num, page in enumerate(doc, start=1):
-        # --- Tables (find before text to mark covered regions) ---
+        # --- Tables: find first to mark covered regions ----------------------
         table_finder = page.find_tables()
         table_bboxes: list[fitz.Rect] = []
         for table in table_finder.tables:
-            # table.bbox may be a fitz.Rect or a plain tuple depending on PyMuPDF version
             table_rect = fitz.Rect(table.bbox)
             table_bboxes.append(table_rect)
             extracted = table.extract()
@@ -48,15 +86,15 @@ def parse_pdf(path: Path) -> ParsedDoc:
                 continue
             headers = [str(c) if c else "" for c in extracted[0]]
             rows = [[str(c) if c else "" for c in row] for row in extracted[1:]]
-            md_rows = [
-                "| " + " | ".join(headers) + " |",
-                "| " + " | ".join("---" for _ in headers) + " |",
-            ] + ["| " + " | ".join(row) + " |" for row in rows]
-            md = "\n".join(md_rows)
+            md_rows = (
+                ["| " + " | ".join(headers) + " |",
+                 "| " + " | ".join("---" for _ in headers) + " |"]
+                + ["| " + " | ".join(row) + " |" for row in rows]
+            )
             elements.append(
                 Element(
                     element_type="table",
-                    content=md,
+                    content="\n".join(md_rows),
                     raw_content={"rows": rows, "headers": headers},
                     metadata={
                         "page": page_num,
@@ -65,40 +103,42 @@ def parse_pdf(path: Path) -> ParsedDoc:
                 )
             )
 
-        # --- Text blocks in reading order ---
+        # --- Text blocks in reading order ------------------------------------
         blocks = page.get_text("dict", sort=True)["blocks"]
         for block in blocks:
             if block.get("type") != 0:
                 continue
             block_rect = fitz.Rect(block["bbox"])
-            # Skip if this block is inside a table region
             if any(block_rect.intersects(tb) for tb in table_bboxes):
                 continue
 
             for line in block.get("lines", []):
-                text = " ".join(
-                    span["text"] for span in line.get("spans", [])
-                ).strip()
-                if len(text) < 10:
+                spans = line.get("spans", [])
+                text = " ".join(s["text"] for s in spans).strip()
+                if not text:
                     continue
 
-                max_size = max(
-                    (span["size"] for span in line.get("spans", [])), default=0
-                )
+                max_size = max((s.get("size", 0) for s in spans), default=0)
+                span_bold = any(_is_bold(s) for s in spans)
                 bbox = line["bbox"]
-                etype = "heading" if max_size >= heading_threshold else "text"
+
+                is_heading = _classify_heading(
+                    text, max_size, span_bold, median_size, p90_size
+                )
+
+                # Apply length filter: drop short non-heading blocks
+                if not is_heading and len(text) < _MIN_TEXT_CHARS:
+                    continue
+
                 elements.append(
                     Element(
-                        element_type=etype,
+                        element_type="heading" if is_heading else "text",
                         content=text,
-                        metadata={
-                            "page": page_num,
-                            "bbox": list(bbox),
-                        },
+                        metadata={"page": page_num, "bbox": list(bbox)},
                     )
                 )
 
-        # --- Figures ---
+        # --- Figures ---------------------------------------------------------
         img_list = page.get_images(full=True)
         for img_info in img_list:
             xref = img_info[0]
@@ -110,7 +150,6 @@ def parse_pdf(path: Path) -> ParsedDoc:
             except Exception:
                 pass
 
-            # Look for a caption: nearest text block below the image rect
             img_rect = page.get_image_rects(xref)
             caption = ""
             if img_rect:
@@ -119,12 +158,11 @@ def parse_pdf(path: Path) -> ParsedDoc:
                     if block.get("type") != 0:
                         continue
                     br = fitz.Rect(block["bbox"])
-                    # Within 100pt below the image
                     if br.y0 >= ir.y1 and br.y0 <= ir.y1 + 100:
                         candidate = " ".join(
                             span["text"]
-                            for line in block.get("lines", [])
-                            for span in line.get("spans", [])
+                            for ln in block.get("lines", [])
+                            for span in ln.get("spans", [])
                         ).strip()
                         if candidate:
                             caption = candidate
@@ -134,10 +172,7 @@ def parse_pdf(path: Path) -> ParsedDoc:
                 Element(
                     element_type="figure",
                     content=caption or f"Figure {fig_n}",
-                    raw_content={
-                        "image_path": str(img_path),
-                        "page": page_num,
-                    },
+                    raw_content={"image_path": str(img_path), "page": page_num},
                     metadata={
                         "page": page_num,
                         "bbox": list(ir) if img_rect else [],
@@ -146,7 +181,6 @@ def parse_pdf(path: Path) -> ParsedDoc:
             )
 
     doc.close()
-
     return ParsedDoc(
         title=title,
         doc_type="pdf",

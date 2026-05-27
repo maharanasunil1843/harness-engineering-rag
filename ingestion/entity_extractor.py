@@ -155,15 +155,43 @@ _TOOL_SCHEMA = {
     },
 }
 
-_SYSTEM = (
-    "You are a precise information-extraction engine for harness engineering documents. "
-    "Extract only entities EXPLICITLY mentioned in the document. "
-    "Do not invent, generalize, or infer. If unsure, omit. "
-    "Every entity you extract must include the source_doc_id provided in the user message.\n\n"
-    "component category MUST be one of: context, execution, persistence, observability, "
-    "orchestration, safety, memory, verification.\n"
-    "failure_mode category MUST be one of: long-horizon, safety, quality, context, cost, retrieval."
+_SYSTEM = """\
+You are a precise information-extraction engine for harness engineering documents.
+Extract only entities EXPLICITLY mentioned in the document.
+Do not invent, generalize, or infer. If unsure, omit.
+Every entity you extract must include the source_doc_id provided in the user message.
+
+component category MUST be one of: context, execution, persistence, observability, orchestration, safety, memory, verification.
+failure_mode category MUST be one of: long-horizon, safety, quality, context, cost, retrieval.
+
+EXTRACTION RULES:
+- A "harness component" is a NAMED, REUSABLE pattern or primitive (e.g. "AGENTS.md", "Ralph Loop", "context firewall", "hooks", "compaction", "sub-agents"). Generic concepts ("good design", "iteration", "feedback") are NOT components.
+- A "failure mode" is a SPECIFIC, NAMED problem (e.g. "context rot", "early stopping", "hallucinated SQL"). Vague issues ("things go wrong", "quality drops") are NOT failure modes.
+- Component and failure names must be 1-4 words. Reject anything longer.
+- If a candidate appears only once in the document and is not capitalized or quoted, do not extract it.
+- When in doubt, omit. Quality over recall.\
+"""
+
+
+_ING_PREFIXES = (
+    "using", "building", "creating", "making", "adding", "running",
+    "handling", "managing", "processing", "implementing", "providing",
+    "allowing", "enabling", "supporting", "ensuring", "avoiding",
 )
+
+
+def _filter_entities(items: list, name_attr: str = "name") -> list:
+    """Drop extracted entities whose name is > 50 chars or starts with an -ing verb."""
+    kept = []
+    for item in items:
+        name: str = getattr(item, name_attr, "")
+        if len(name) > 50:
+            continue
+        first_word = name.split()[0].lower() if name.split() else ""
+        if first_word in _ING_PREFIXES:
+            continue
+        kept.append(item)
+    return kept
 
 
 def extract_entities(doc_id: UUID, parsed: ParsedDoc) -> ExtractionResult:
@@ -210,8 +238,8 @@ def extract_entities(doc_id: UUID, parsed: ParsedDoc) -> ExtractionResult:
     def _safe_list(cls, key: str) -> list:
         return [cls(**item) for item in tool_input.get(key, []) if isinstance(item, dict)]
 
-    components = _safe_list(HarnessComponent, "components")
-    failures = _safe_list(FailureMode, "failures")
+    components = _filter_entities(_safe_list(HarnessComponent, "components"))
+    failures = _filter_entities(_safe_list(FailureMode, "failures"))
     harnesses = _safe_list(Harness, "harnesses")
     benchmarks = _safe_list(BenchmarkResult, "benchmarks")
     practitioners = _safe_list(Practitioner, "practitioners")
