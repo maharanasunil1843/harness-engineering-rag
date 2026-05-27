@@ -36,6 +36,7 @@ dependencies = [
     "ragas>=0.4.3",
     "rank-bm25>=0.2.2",
     "sqlalchemy>=2.0.50",
+    "sse-starlette>=3.4.4",
     "tiktoken>=0.13.0",
     "trafilatura>=2.0.0",
     "upstash-redis>=1.7.0",

@@ -1,6 +1,5 @@
 """Hybrid retrieval: dense (pgvector) + sparse (tsvector) fused with RRF."""
 import json
-import os
 from typing import Any
 
 import psycopg
@@ -28,7 +27,7 @@ class RetrievedChunk(BaseModel):
 
 
 def _get_conn() -> psycopg.Connection:
-    conn = psycopg.connect(os.environ["DATABASE_URL"])
+    conn = psycopg.connect(get_settings().database_url)
     register_vector(conn)
     return conn
 
