@@ -13,3 +13,6 @@ data/raw/
 *.egg-info/
 .ruff_cache/
 .pytest_cache/
+
+# Claude Code local settings (personal machine policy, not project policy)
+.claude/settings.local.json
