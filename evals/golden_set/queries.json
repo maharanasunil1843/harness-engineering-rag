@@ -1,0 +1,142 @@
+[
+  {
+    "query": "What is a harness in the context of AI agents?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["model", "harness", "scaffolding"],
+    "expected_sources_min": 1,
+    "notes": "Core definition — should retrieve from multiple corpus documents"
+  },
+  {
+    "query": "Who coined the term harness engineering?",
+    "expected_intent": "sql",
+    "expected_keywords": ["Viv Trivedy"],
+    "expected_sources_min": 1,
+    "notes": "Practitioner attribution — should hit practitioners table or retrieval"
+  },
+  {
+    "query": "What are the three techniques for battling context rot?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["compaction", "offloading", "skills"],
+    "expected_sources_min": 1,
+    "notes": "Specific technical list from Osmani or Anthropic doc"
+  },
+  {
+    "query": "List all harness components in the orchestration category",
+    "expected_intent": "sql",
+    "expected_keywords": ["orchestration"],
+    "expected_sources_min": 1,
+    "notes": "Pure SQL query against harness_components table"
+  },
+  {
+    "query": "What failure modes do hooks address and what is the design principle?",
+    "expected_intent": "hybrid",
+    "expected_keywords": ["hooks", "enforcement", "silent", "verbose"],
+    "expected_sources_min": 1,
+    "notes": "Requires both retrieval and SQL fusion"
+  },
+  {
+    "query": "How does Anthropic's planner/generator/evaluator architecture work?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["planner", "generator", "evaluator", "sprint"],
+    "expected_sources_min": 1,
+    "notes": "Specific architecture from Anthropic long-running doc"
+  },
+  {
+    "query": "What is the Ralph Loop and who popularized it?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["Ralph", "hook", "continuation"],
+    "expected_sources_min": 1,
+    "notes": "Named concept from Osmani or Trivedy"
+  },
+  {
+    "query": "Compare Claude Code's architecture to harness engineering",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["Claude Code", "Fareed Khan"],
+    "expected_sources_min": 1,
+    "notes": "Cross-document synthesis — should reference DOCX practitioner case study"
+  },
+  {
+    "query": "How many harness components are there in total?",
+    "expected_intent": "sql",
+    "expected_keywords": ["108"],
+    "expected_sources_min": 0,
+    "notes": "COUNT(*) against harness_components table — answer is 108"
+  },
+  {
+    "query": "What is the skill issue reframe?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["configuration", "HumanLayer"],
+    "expected_sources_min": 1,
+    "notes": "Core thesis of the HumanLayer doc"
+  },
+  {
+    "query": "How are harness engineering principles applied in manufacturing?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["Sugna Metals", "ratchet"],
+    "expected_sources_min": 1,
+    "notes": "DOCX retrieval — practitioner case study doc"
+  },
+  {
+    "query": "What did the ETH Zurich study find about AGENTS.md?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["ETH Zurich", "agentfiles"],
+    "expected_sources_min": 1,
+    "notes": "Specific research finding from Osmani doc"
+  },
+  {
+    "query": "What benchmarks show harness changes outperform model changes?",
+    "expected_intent": "hybrid",
+    "expected_keywords": ["Terminal Bench"],
+    "expected_sources_min": 1,
+    "notes": "Hybrid: retrieval for context + SQL for benchmark_results table"
+  },
+  {
+    "query": "How does Red Hat structure AI-assisted development?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["two-phase", "impact map"],
+    "expected_sources_min": 1,
+    "notes": "Retrieval from the HTML Red Hat Developer article"
+  },
+  {
+    "query": "What models are used in the Sugna Metals system and why?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["Opus", "Haiku", "cost"],
+    "expected_sources_min": 1,
+    "notes": "DOCX retrieval — cost-routing rationale in practitioner case study"
+  },
+  {
+    "query": "Which practitioners are in the knowledge base?",
+    "expected_intent": "sql",
+    "expected_keywords": ["Viv", "Addy"],
+    "expected_sources_min": 1,
+    "notes": "SQL against practitioners table — should return all 7"
+  },
+  {
+    "query": "Why do sub-agents help with context management?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["context firewall", "smart zone"],
+    "expected_sources_min": 1,
+    "notes": "Conceptual retrieval from Osmani or Anthropic doc"
+  },
+  {
+    "query": "What is Harness-as-a-Service?",
+    "expected_intent": "retrieval",
+    "expected_keywords": ["HaaS", "runtime"],
+    "expected_sources_min": 1,
+    "notes": "Specific concept from Trivedy anatomy doc"
+  },
+  {
+    "query": "What failure modes has Sugna Metals ratcheted against?",
+    "expected_intent": "hybrid",
+    "expected_keywords": ["hallucinated SQL", "faithfulness"],
+    "expected_sources_min": 1,
+    "notes": "Hybrid: DOCX retrieval + SQL failure_modes table with Sugna provenance"
+  },
+  {
+    "query": "Hello, what can you help me with?",
+    "expected_intent": "direct",
+    "expected_keywords": [],
+    "expected_sources_min": 0,
+    "notes": "Direct answer — no retrieval needed, tests graceful handling"
+  }
+]

@@ -1,4 +1,4 @@
-.PHONY: ingest ingest-chunks-only verify test-agent smoke lint
+.PHONY: ingest ingest-chunks-only verify test-agent smoke lint eval eval-quick
 
 ingest:
 	uv run python -m ingestion.run --dir data/raw
@@ -21,3 +21,9 @@ smoke:
 
 lint:
 	uv run ruff check .
+
+eval:
+	uv run python -m evals.run_eval
+
+eval-quick:
+	uv run python -m evals.run_eval --quick
