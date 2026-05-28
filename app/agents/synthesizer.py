@@ -99,6 +99,8 @@ async def synthesize(
                 "source_type": "sql",
                 "query": sql_result.sql,
                 "row_count": len(sql_result.rows),
+                "rows": sql_result.rows[:20],
+                "explanation": sql_result.explanation,
             }
         )
 

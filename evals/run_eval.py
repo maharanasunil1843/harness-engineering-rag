@@ -68,11 +68,17 @@ async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSa
         print(f"  Querying: {item['query'][:70]}...")
         try:
             result = await ask(item["query"])
-            contexts = [
-                s.get("content", s.get("text", str(s)))
-                for s in (result.sources or [])
-                if s
-            ]
+            contexts = []
+            for s in (result.sources or []):
+                if not s:
+                    continue
+                if s.get("source_type") == "sql":
+                    rows_text = "\n".join(str(r) for r in s.get("rows", []))
+                    contexts.append(
+                        f"SQL: {s.get('query', '')}\n{rows_text}\n{s.get('explanation', '')}"
+                    )
+                else:
+                    contexts.append(s.get("content", str(s)))
             sample = SingleTurnSample(
                 user_input=item["query"],
                 response=result.answer,
