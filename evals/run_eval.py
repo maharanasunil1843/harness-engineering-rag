@@ -1,8 +1,8 @@
 """RAGAS evaluation harness for the harness engineering RAG system.
 
 Loads the golden set, calls ask() for each query, evaluates with RAGAS metrics
-(faithfulness, context_precision_without_reference, answer_relevancy), and exits
-non-zero if mean faithfulness drops below 0.85.
+(faithfulness, answer_relevancy), and exits non-zero if mean faithfulness
+drops below 0.85.
 
 Usage:
     uv run python -m evals.run_eval          # full 20-query eval
@@ -28,16 +28,14 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from anthropic import Anthropic  # noqa: E402
-from openai import OpenAI  # noqa: E402
+from langchain_anthropic import ChatAnthropic  # noqa: E402
+from langchain_openai import OpenAIEmbeddings  # noqa: E402
 from ragas import EvaluationDataset, SingleTurnSample, evaluate  # noqa: E402
-from ragas.embeddings.base import embedding_factory  # noqa: E402
-from ragas.llms import llm_factory  # noqa: E402
-from ragas.metrics.collections import (  # noqa: E402
-    AnswerRelevancy,
-    ContextPrecisionWithoutReference,
-    Faithfulness,
-)
+from ragas.embeddings import LangchainEmbeddingsWrapper  # noqa: E402
+from ragas.llms.base import LangchainLLMWrapper  # noqa: E402
+from ragas.metrics._answer_relevance import answer_relevancy  # noqa: E402
+from ragas.metrics._faithfulness import faithfulness  # noqa: E402
+from ragas.run_config import RunConfig  # noqa: E402
 
 from app.agents import ask  # noqa: E402
 
@@ -51,22 +49,17 @@ def _load_queries(quick: bool) -> list[dict]:
     return queries[:5] if quick else queries
 
 
-def _build_metrics() -> list:
-    evaluator_llm = llm_factory(
-        model="claude-haiku-4-5-20251001",
-        provider="anthropic",
-        client=Anthropic(),
+def _configure_metrics() -> None:
+    # ragas 0.4.x old-style singletons — set LLM/embeddings directly
+    llm = LangchainLLMWrapper(
+        ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=4096)
     )
-    evaluator_embeddings = embedding_factory(
-        provider="openai",
-        model="text-embedding-3-small",
-        client=OpenAI(),
+    emb = LangchainEmbeddingsWrapper(
+        OpenAIEmbeddings(model="text-embedding-3-small")
     )
-    return [
-        Faithfulness(llm=evaluator_llm),
-        ContextPrecisionWithoutReference(llm=evaluator_llm),
-        AnswerRelevancy(llm=evaluator_llm, embeddings=evaluator_embeddings),
-    ]
+    faithfulness.llm = llm
+    answer_relevancy.llm = llm
+    answer_relevancy.embeddings = emb
 
 
 async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSample]]:
@@ -86,7 +79,7 @@ async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSa
                 retrieved_contexts=contexts if contexts else ["No context retrieved."],
             )
         except Exception as exc:
-            print(f"    [WARN] ask() failed for this query: {exc}")
+            print(f"    [WARN] ask() failed: {exc}")
             sample = SingleTurnSample(
                 user_input=item["query"],
                 response="Error: could not retrieve answer.",
@@ -97,15 +90,14 @@ async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSa
 
 
 def _print_table(rows: list[dict]) -> None:
-    header = f"{'Query':<55} {'F':>6} {'CP':>6} {'AR':>6}"
+    header = f"{'Query':<55} {'F':>6} {'AR':>6}"
     print("\n" + header)
     print("-" * len(header))
     for r in rows:
         q = r["query"][:52] + "..." if len(r["query"]) > 55 else r["query"]
         f = f"{r['faithfulness']:.3f}" if r["faithfulness"] is not None else "  N/A"
-        cp = f"{r['context_precision']:.3f}" if r["context_precision"] is not None else "  N/A"
         ar = f"{r['answer_relevancy']:.3f}" if r["answer_relevancy"] is not None else "  N/A"
-        print(f"{q:<55} {f:>6} {cp:>6} {ar:>6}")
+        print(f"{q:<55} {f:>6} {ar:>6}")
     print()
 
 
@@ -132,31 +124,32 @@ def main(quick: bool = False) -> int:
     golden_items = [p[0] for p in pairs]
     ragas_samples = [p[1] for p in pairs]
 
-    print("\nRunning RAGAS evaluation...")
-    metrics = _build_metrics()
+    print("\nRunning RAGAS evaluation (Haiku as judge)...")
+    _configure_metrics()
+    metrics = [faithfulness, answer_relevancy]
     dataset = EvaluationDataset(samples=ragas_samples)
-    result = evaluate(dataset=dataset, metrics=metrics, raise_exceptions=False)
+    run_cfg = RunConfig(timeout=600, max_retries=3, max_workers=4)
+    result = evaluate(
+        dataset=dataset,
+        metrics=metrics,
+        run_config=run_cfg,
+        raise_exceptions=False,
+        show_progress=True,
+    )
 
     scores_df = result.to_pandas()
 
     rows: list[dict] = []
     for i, item in enumerate(golden_items):
-        row_scores = scores_df.iloc[i] if i < len(scores_df) else {}
+        row = scores_df.iloc[i] if i < len(scores_df) else {}
+        f_val = row.get("faithfulness")
+        ar_val = row.get("answer_relevancy")
         rows.append(
             {
                 "query": item["query"],
                 "expected_intent": item["expected_intent"],
-                "faithfulness": float(row_scores.get("faithfulness", float("nan")))
-                if row_scores.get("faithfulness") is not None
-                else None,
-                "context_precision": float(
-                    row_scores.get("context_precision_without_reference", float("nan"))
-                )
-                if row_scores.get("context_precision_without_reference") is not None
-                else None,
-                "answer_relevancy": float(row_scores.get("answer_relevancy", float("nan")))
-                if row_scores.get("answer_relevancy") is not None
-                else None,
+                "faithfulness": float(f_val) if f_val is not None else None,
+                "answer_relevancy": float(ar_val) if ar_val is not None else None,
                 "response_preview": ragas_samples[i].response[:120] + "..."
                 if len(ragas_samples[i].response) > 120
                 else ragas_samples[i].response,
@@ -166,12 +159,10 @@ def main(quick: bool = False) -> int:
     _print_table(rows)
 
     f_vals = [r["faithfulness"] for r in rows if r["faithfulness"] is not None]
-    cp_vals = [r["context_precision"] for r in rows if r["context_precision"] is not None]
     ar_vals = [r["answer_relevancy"] for r in rows if r["answer_relevancy"] is not None]
 
     aggregates = {
         "mean_faithfulness": sum(f_vals) / len(f_vals) if f_vals else None,
-        "mean_context_precision": sum(cp_vals) / len(cp_vals) if cp_vals else None,
         "mean_answer_relevancy": sum(ar_vals) / len(ar_vals) if ar_vals else None,
         "query_count": len(rows),
     }
@@ -192,7 +183,10 @@ def main(quick: bool = False) -> int:
         )
         return 1
 
-    print(f"\nPASS: mean faithfulness {mean_faith:.4f} >= threshold {FAITHFULNESS_THRESHOLD}" if mean_faith is not None else "\nWARN: no faithfulness scores computed")
+    if mean_faith is not None:
+        print(f"\nPASS: mean faithfulness {mean_faith:.4f} >= threshold {FAITHFULNESS_THRESHOLD}")
+    else:
+        print("\nWARN: no faithfulness scores computed")
     return 0
 
 

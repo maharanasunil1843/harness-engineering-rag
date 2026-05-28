@@ -87,6 +87,7 @@ async def synthesize(
                     "element_type": c.element_type,
                     "score": c.score,
                     "source_type": "retrieval",
+                    "content": c.content,
                 }
             )
 
