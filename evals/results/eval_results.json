@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-05-28T08:23:20.900534Z",
+  "per_query": [
+    {
+      "query": "What is a harness in the context of AI agents?",
+      "expected_intent": "retrieval",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9889095905806705,
+      "response_preview": "# What is a Harness in the Context of AI Agents?\n\n## Core Definition\n\nA **harness** is every piece of code, configuratio..."
+    },
+    {
+      "query": "Who coined the term harness engineering?",
+      "expected_intent": "sql",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.0,
+      "response_preview": "## Who Coined the Term \"Harness Engineering\"?\n\nThe sources do not directly state who coined the term \"harness engineerin..."
+    },
+    {
+      "query": "What are the three techniques for battling context rot?",
+      "expected_intent": "retrieval",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7853850311015386,
+      "response_preview": "# Three Techniques for Battling Context Rot\n\nContext rot is the phenomenon where models get progressively worse at reaso..."
+    },
+    {
+      "query": "List all harness components in the orchestration category",
+      "expected_intent": "sql",
+      "faithfulness": 0.90625,
+      "answer_relevancy": 0.8609571774502432,
+      "response_preview": "## Harness Components in the Orchestration Category\n\nThe database contains **18 total components** in the orchestration ..."
+    },
+    {
+      "query": "What failure modes do hooks address and what is the design principle?",
+      "expected_intent": "hybrid",
+      "faithfulness": 0.7142857142857143,
+      "answer_relevancy": 0.8301667141089998,
+      "response_preview": "## Hooks: Failure Modes Addressed and Design Principles\n\n### What Hooks Are and Why They Exist\n\nHooks represent the **en..."
+    }
+  ],
+  "aggregates": {
+    "mean_faithfulness": 0.9241071428571429,
+    "mean_answer_relevancy": 0.6930837026482904,
+    "query_count": 5
+  }
+}

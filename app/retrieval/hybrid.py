@@ -189,4 +189,8 @@ async def hybrid_retrieve(
             )
         )
 
-    return results + parent_chunks
+    combined = results + parent_chunks
+    # Filter out heading-only micro-chunks (< 100 chars); substantive content
+    # is already present via parent-chunk expansion.
+    filtered = [c for c in combined if len(c.content) >= 100]
+    return filtered if filtered else combined

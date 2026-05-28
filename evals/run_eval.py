@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -68,6 +69,10 @@ async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSa
         print(f"  Querying: {item['query'][:70]}...")
         try:
             result = await ask(item["query"])
+            # Strip synthesizer confidence line — RAGAS can't verify it from chunks
+            answer_text = re.sub(
+                r"\n+Confidence:\s*[\d.]+\s*$", "", result.answer, flags=re.IGNORECASE
+            ).strip()
             contexts = []
             for s in (result.sources or []):
                 if not s:
@@ -78,10 +83,12 @@ async def _collect_samples(queries: list[dict]) -> list[tuple[dict, SingleTurnSa
                         f"SQL: {s.get('query', '')}\n{rows_text}\n{s.get('explanation', '')}"
                     )
                 else:
-                    contexts.append(s.get("content", str(s)))
+                    ctx = s.get("content", str(s))
+                    if len(ctx) >= 100:  # skip heading stubs that slipped through
+                        contexts.append(ctx)
             sample = SingleTurnSample(
                 user_input=item["query"],
-                response=result.answer,
+                response=answer_text,
                 retrieved_contexts=contexts if contexts else ["No context retrieved."],
             )
         except Exception as exc:

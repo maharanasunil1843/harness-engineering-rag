@@ -19,7 +19,6 @@ jobs:
   eval:
     runs-on: ubuntu-latest
     needs: lint
-    continue-on-error: true  # remove once secrets are configured and faithfulness >= 0.85
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
