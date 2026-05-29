@@ -267,4 +267,5 @@ async def ask(query: str) -> SynthesizedAnswer:
             trace_id=trace_id,
             latency_ms=0.0,
         )
+    answer.cache_hit = bool(final_state.get("cache_hit", False))
     return answer

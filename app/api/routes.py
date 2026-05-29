@@ -132,7 +132,7 @@ async def query(request: Request, body: QueryRequest) -> QueryResponse:
         confidence=answer.confidence,
         trace_id=answer.trace_id,
         latency_ms=answer.latency_ms,
-        cache_hit=False,
+        cache_hit=answer.cache_hit,
     )
 
 
@@ -236,7 +236,7 @@ async def query_stream(request: Request, body: QueryRequest):
                 # synthesis-only (and 0.0 on a cache hit), so it understated the
                 # real latency the user experienced.
                 latency_ms=(time.perf_counter() - t_start) * 1000,
-                cache_hit=False,
+                cache_hit=answer.cache_hit,
                 intent=intent,
             )
             yield {"event": "done", "data": response.model_dump_json()}

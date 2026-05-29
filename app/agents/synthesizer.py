@@ -28,6 +28,9 @@ class SynthesizedAnswer(BaseModel):
     confidence: float
     trace_id: str
     latency_ms: float
+    # Set by the supervisor from the graph state; the synthesizer itself
+    # always produces a fresh (non-cached) answer.
+    cache_hit: bool = False
 
 
 def _format_retrieval(chunks: list[RetrievedChunk]) -> str:
