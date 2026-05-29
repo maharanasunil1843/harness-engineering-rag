@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 import psycopg
@@ -35,17 +36,35 @@ _STREAM_TIMEOUT_S = 120.0
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _normalize_relevance(scores: list[float | None]) -> list[float | None]:
+    """Scale raw retrieval scores into a 0-1 relevance for UI display.
+
+    Hybrid retrieval emits raw RRF fusion scores (sums of 1/(k+rank), so ~0.016
+    at best), which render as a near-empty bar when shown as a percentage. We
+    scale relative to the strongest result in the set, so the top source reads
+    ~100% and the rest are proportional. Display-only — the raw score is kept
+    internally for ranking and the synthesizer prompt.
+    """
+    present = [s for s in scores if s is not None and s > 0]
+    max_raw = max(present) if present else 0.0
+    if max_raw <= 0:
+        return [None if s is None else 0.0 for s in scores]
+    return [None if s is None else min(1.0, s / max_raw) for s in scores]
+
+
 def _sources_from_answer(answer) -> list[SourceInfo]:
+    raw = answer.sources or []
+    normalized = _normalize_relevance([s.get("score") for s in raw])
     return [
         SourceInfo(
             chunk_id=s.get("chunk_id"),
             doc_id=s.get("doc_id"),
             doc_title=s.get("doc_title"),
             element_type=s.get("element_type"),
-            score=s.get("score"),
+            score=rel,
             source_type=s.get("source_type", "retrieval"),
         )
-        for s in (answer.sources or [])
+        for s, rel in zip(raw, normalized)
     ]
 
 
@@ -162,13 +181,14 @@ async def query_stream(request: Request, body: QueryRequest):
                     chunks = await hybrid_retrieve(
                         classified.rewritten, top_k=10, query_embedding=embedding
                     )
-                    for chunk in chunks:
+                    rel_scores = _normalize_relevance([c.score for c in chunks])
+                    for chunk, rel in zip(chunks, rel_scores):
                         src = SourceInfo(
                             chunk_id=chunk.chunk_id,
                             doc_id=chunk.doc_id,
                             doc_title=chunk.metadata.get("title", chunk.doc_id),
                             element_type=chunk.element_type,
-                            score=chunk.score,
+                            score=rel,
                             source_type="retrieval",
                         )
                         sources_emitted.append(src)
@@ -195,13 +215,15 @@ async def query_stream(request: Request, body: QueryRequest):
                 yield ev
                 await asyncio.sleep(0)
 
-            # Stream tokens: split answer into ~20-word chunks with 50ms delay.
-            words = answer.answer.split()
+            # Stream tokens in ~20-word chunks with a 50ms delay. Tokenize with
+            # each word carrying its trailing whitespace (`\S+\s*`) so the
+            # original newlines survive — the answer is Markdown, and a plain
+            # .split() collapses every newline, flattening headings, lists, and
+            # tables into one unrenderable paragraph on the client.
+            tokens = re.findall(r"\S+\s*", answer.answer)
             chunk_size = 20
-            for i in range(0, len(words), chunk_size):
-                chunk_text = " ".join(words[i : i + chunk_size])
-                if i + chunk_size < len(words):
-                    chunk_text += " "
+            for i in range(0, len(tokens), chunk_size):
+                chunk_text = "".join(tokens[i : i + chunk_size])
                 yield {"event": "token", "data": json.dumps({"text": chunk_text})}
                 await asyncio.sleep(0.05)
 
@@ -210,7 +232,10 @@ async def query_stream(request: Request, body: QueryRequest):
                 sources=_sources_from_answer(answer),
                 confidence=answer.confidence,
                 trace_id=answer.trace_id,
-                latency_ms=answer.latency_ms,
+                # End-to-end wall-clock for this request. answer.latency_ms is
+                # synthesis-only (and 0.0 on a cache hit), so it understated the
+                # real latency the user experienced.
+                latency_ms=(time.perf_counter() - t_start) * 1000,
                 cache_hit=False,
                 intent=intent,
             )

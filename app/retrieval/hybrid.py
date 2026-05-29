@@ -60,11 +60,13 @@ async def hybrid_retrieve(
         # ── Dense retrieval ────────────────────────────────────────────────
         dense_rows = conn.execute(
             """
-            SELECT chunk_id, doc_id, content, element_type, raw_content, metadata,
-                   1 - (embedding <=> %s::vector) AS score
-            FROM chunks
-            WHERE (%s::jsonb IS NULL OR metadata @> %s::jsonb)
-            ORDER BY embedding <=> %s::vector
+            SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content,
+                   c.metadata, 1 - (c.embedding <=> %s::vector) AS score,
+                   d.title, d.source_path
+            FROM chunks c
+            JOIN documents d ON d.doc_id = c.doc_id
+            WHERE (%s::jsonb IS NULL OR c.metadata @> %s::jsonb)
+            ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
             (query_embedding, meta_json, meta_json, query_embedding, _DENSE_FETCH),
@@ -73,11 +75,13 @@ async def hybrid_retrieve(
         # ── Sparse retrieval ───────────────────────────────────────────────
         sparse_rows = conn.execute(
             """
-            SELECT chunk_id, doc_id, content, element_type, raw_content, metadata,
-                   ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS score
-            FROM chunks
-            WHERE tsv @@ plainto_tsquery('english', %s)
-              AND (%s::jsonb IS NULL OR metadata @> %s::jsonb)
+            SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content,
+                   c.metadata, ts_rank_cd(c.tsv, plainto_tsquery('english', %s)) AS score,
+                   d.title, d.source_path
+            FROM chunks c
+            JOIN documents d ON d.doc_id = c.doc_id
+            WHERE c.tsv @@ plainto_tsquery('english', %s)
+              AND (%s::jsonb IS NULL OR c.metadata @> %s::jsonb)
             ORDER BY score DESC
             LIMIT %s
             """,
@@ -141,7 +145,7 @@ async def hybrid_retrieve(
         with _get_conn() as conn:
             placeholders = ",".join(["%s"] * len(parent_ids))
             parent_rows = conn.execute(
-                f"SELECT chunk_id, doc_id, content, element_type, raw_content, metadata FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608
+                f"SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content, c.metadata, d.title, d.source_path FROM chunks c JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id IN ({placeholders})",  # noqa: S608
                 list(parent_ids),
             ).fetchall()
         for pr in parent_rows:
@@ -152,6 +156,10 @@ async def hybrid_retrieve(
                 except Exception:
                     raw = None
             meta = pr[5] if isinstance(pr[5], dict) else {}
+            # Surface the real document title/path (lives in `documents`, not
+            # in chunk metadata) so downstream consumers don't fall back to the
+            # doc_id UUID.
+            meta = {**meta, "title": pr[6], "source_path": pr[7]}
             parent_chunks.append(
                 RetrievedChunk(
                     chunk_id=str(pr[0]),
@@ -176,6 +184,8 @@ async def hybrid_retrieve(
             except Exception:
                 raw = None
         meta = row[5] if isinstance(row[5], dict) else {}
+        # The real title/source_path come from the joined `documents` row.
+        meta = {**meta, "title": row[7], "source_path": row[8]}
         results.append(
             RetrievedChunk(
                 chunk_id=cid,

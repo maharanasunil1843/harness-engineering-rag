@@ -40,7 +40,7 @@ async def _node_cache_check(state: AgentState) -> dict[str, Any]:
             answer = SynthesizedAnswer(
                 answer=hit.answer,
                 sources=hit.sources,
-                confidence=1.0,
+                confidence=hit.confidence,
                 trace_id=state["trace_id"],
                 latency_ms=0.0,
             )
@@ -156,6 +156,7 @@ async def _node_cache_store(state: AgentState) -> dict[str, Any]:
                 state["query_embedding"],
                 answer.answer,
                 answer.sources,
+                answer.confidence,
             )
         except Exception:
             pass  # Cache write failure is non-fatal

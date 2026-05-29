@@ -31,6 +31,10 @@ class CacheResult(BaseModel):
     sources: list[dict]
     similarity: float
     cached_query: str
+    # Confidence parsed at original synthesis time. Defaults to 0.5 (the
+    # synthesizer's own fallback) for legacy entries cached before this field
+    # existed, rather than the misleading 1.0 the supervisor used to hard-code.
+    confidence: float = 0.5
 
 
 def _redis() -> Redis:
@@ -82,6 +86,7 @@ async def cache_get(query: str, query_embedding: list[float]) -> CacheResult | N
                     sources=entry.get("sources", []),
                     similarity=sim,
                     cached_query=entry.get("query", ""),
+                    confidence=entry.get("confidence", 0.5),
                 )
 
     if best is not None:
@@ -97,6 +102,7 @@ async def cache_set(
     query_embedding: list[float],
     answer: str,
     sources: list[dict],
+    confidence: float = 0.5,
 ) -> None:
     s = get_settings()
     r = _redis()
@@ -108,6 +114,7 @@ async def cache_set(
             "embedding": query_embedding,
             "answer": answer,
             "sources": sources,
+            "confidence": confidence,
             "timestamp": time.time(),
         }
     )
