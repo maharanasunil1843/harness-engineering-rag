@@ -1,4 +1,4 @@
-.PHONY: ingest ingest-chunks-only verify test-agent smoke lint eval eval-quick
+.PHONY: ingest ingest-chunks-only verify test test-unit test-integration test-agent smoke lint eval eval-quick
 
 ingest:
 	uv run python -m ingestion.run --dir data/raw
@@ -12,6 +12,15 @@ verify:
 	cur = conn.cursor(); \
 	[print(f'{t}: {cur.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}') \
 	 for t in ['documents','chunks','harness_components','failure_modes','practitioners','harnesses','benchmark_results']]"
+
+test:
+	uv run pytest tests/ -v
+
+test-unit:
+	uv run pytest tests/ -v -m "not integration"
+
+test-integration:
+	uv run pytest tests/ -v -m integration
 
 test-agent:
 	uv run python scripts/test_agent.py

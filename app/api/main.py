@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 
 from app.api.middleware import setup_middleware
-from app.api.routes import router
+from app.api.routes import install_validation_handler, router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
     setup_middleware(app)
+    install_validation_handler(app)
     app.include_router(router)
     return app
 

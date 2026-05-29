@@ -1,5 +1,6 @@
 """Text-to-SQL agent with schema grounding, prompt caching, and self-correction."""
 import os
+import re
 import time
 
 import psycopg
@@ -17,6 +18,10 @@ _CATALOG_TABLES = [
     "benchmark_results",
     "component_addresses_failure",
 ]
+
+# Tables the LLM is allowed to query. Anything outside this set (documents,
+# chunks, pg_* internals, information_schema, etc.) is rejected.
+ALLOWED_TABLES: frozenset[str] = frozenset(_CATALOG_TABLES)
 
 # Cached DDL string — populated once per process, never re-fetched
 _schema_ddl: str | None = None
@@ -76,17 +81,83 @@ def _build_schema_ddl() -> str:
     return _schema_ddl
 
 
-def _safe_sql(sql: str) -> str:
-    """Raise ValueError for any non-SELECT or multi-statement SQL."""
-    stripped = sql.strip().lstrip("```sql").lstrip("```").strip()
-    # Drop trailing code fence if present
-    if stripped.endswith("```"):
-        stripped = stripped[:-3].strip()
-    first_word = stripped.split()[0].upper() if stripped.split() else ""
+def _strip_fences(sql: str) -> str:
+    s = sql.strip()
+    if s.startswith("```sql"):
+        s = s[6:]
+    elif s.startswith("```"):
+        s = s[3:]
+    if s.endswith("```"):
+        s = s[:-3]
+    return s.strip()
+
+
+_TABLE_REF_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)",
+    re.IGNORECASE,
+)
+
+
+def validate_sql(sql: str) -> tuple[bool, str]:
+    """Static safety check for LLM-generated SQL.
+
+    Returns (is_safe, reason). The reason is empty when safe. Used both by the
+    SQL agent (which raises on rejection) and by tests directly.
+
+    Rejects:
+    - Non-SELECT statements (DROP, INSERT, UPDATE, DELETE, ALTER, ...).
+    - Multi-statement SQL (semicolons).
+    - SQL comments (`--`, `/* */`) — common injection vector.
+    - UNION clauses — used for cross-table data exfiltration.
+    - Any table reference outside ALLOWED_TABLES (catches `chunks`,
+      `documents`, `information_schema.*`, `pg_*`, etc.).
+    """
+    s = _strip_fences(sql)
+    if not s:
+        return False, "empty SQL"
+
+    # Reject SQL comments outright — they're rare in legitimate generated SQL
+    # and a classic way to hide an injected fragment.
+    if "--" in s or "/*" in s:
+        return False, "SQL comments are not allowed"
+
+    if ";" in s:
+        return False, "multi-statement SQL is not allowed"
+
+    first_word = s.split()[0].upper() if s.split() else ""
     if first_word != "SELECT":
-        raise ValueError(f"Only SELECT queries are allowed, got: {first_word}")
-    if ";" in stripped:
-        raise ValueError("Multi-statement SQL is not allowed (semicolons rejected)")
+        return False, f"only SELECT queries are allowed, got: {first_word or '<empty>'}"
+
+    # UNION (and UNION ALL) lets a single SELECT pull data from other tables —
+    # block it. CTEs (WITH …) are also blocked because they can declare any
+    # name and bypass the FROM/JOIN allowlist scan.
+    upper = s.upper()
+    if re.search(r"\bUNION\b", upper):
+        return False, "UNION is not allowed"
+    if re.search(r"\bWITH\b", upper):
+        return False, "CTEs (WITH ...) are not allowed"
+    if re.search(r"\bINTO\b", upper):
+        return False, "SELECT INTO is not allowed"
+
+    # Walk every FROM/JOIN reference and verify the base table is allowed.
+    refs = _TABLE_REF_RE.findall(s)
+    if not refs:
+        return False, "no table reference found"
+    for ref in refs:
+        # Drop schema qualifier if present (e.g. `public.harness_components`).
+        base = ref.split(".")[-1].lower().strip('"')
+        if base not in ALLOWED_TABLES:
+            return False, f"table not in allowlist: {ref}"
+
+    return True, ""
+
+
+def _safe_sql(sql: str) -> str:
+    """Strip code fences, run validate_sql, return clean SQL or raise."""
+    stripped = _strip_fences(sql)
+    ok, reason = validate_sql(stripped)
+    if not ok:
+        raise ValueError(reason)
     return stripped
 
 

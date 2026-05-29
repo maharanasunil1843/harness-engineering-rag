@@ -8,10 +8,34 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// In-memory fallback used when localStorage throws (quota exceeded, private
+// browsing mode with storage disabled). Sessions still work for the lifetime
+// of the tab — they just don't persist across reloads.
+let _memoryFallback: Session[] | null = null;
+
+function _readRaw(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function _writeRaw(sessions: Session[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    _memoryFallback = null;
+  } catch {
+    // QuotaExceededError, SecurityError, etc. — degrade silently.
+    _memoryFallback = sessions;
+  }
+}
+
 export function getSessions(): Session[] {
   if (typeof window === "undefined") return [];
+  if (_memoryFallback) return _memoryFallback;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = _readRaw();
     if (!raw) return [];
     return JSON.parse(raw) as Session[];
   } catch {
@@ -33,7 +57,7 @@ export function createSession(): Session {
   };
   const sessions = getSessions();
   sessions.unshift(session);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  _writeRaw(sessions);
   return session;
 }
 
@@ -46,14 +70,19 @@ export function updateSession(id: string, messages: Message[]): void {
     ? firstUserMsg.content.slice(0, 60)
     : sessions[idx].title;
   sessions[idx] = { ...sessions[idx], title, messages, updatedAt: Date.now() };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  _writeRaw(sessions);
 }
 
 export function deleteSession(id: string): void {
   const updated = getSessions().filter((s) => s.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  _writeRaw(updated);
 }
 
 export function clearSessions(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignored — degraded mode
+  }
+  _memoryFallback = null;
 }

@@ -4,7 +4,6 @@ import time
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +42,10 @@ def setup_middleware(app: FastAPI) -> None:
     async def logging_and_rate_limit(request: Request, call_next) -> Response:
         t0 = time.perf_counter()
 
-        # Rate-limit guard on query endpoints only
-        if request.url.path.startswith("/api/query"):
-            from app.retrieval.rate_limiter import check_rate_limit
-            try:
-                result = await check_rate_limit()
-                if not result.allowed:
-                    return JSONResponse(
-                        status_code=429,
-                        content={"message": "Rate limit exceeded", "reset_in": result.reset_in},
-                        headers={"Retry-After": str(int(result.reset_in))},
-                    )
-            except Exception:
-                pass  # Rate limiter failure is non-fatal — let request through
+        # Note: per-user rate-limit enforcement lives in the route handlers
+        # (routes.py) so we have direct access to the parsed body / headers.
+        # Middleware-level enforcement is redundant and used to share one
+        # bucket across all users (see audit issue 2.3).
 
         response = await call_next(request)
         latency_ms = (time.perf_counter() - t0) * 1000

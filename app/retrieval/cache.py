@@ -1,4 +1,14 @@
-"""Semantic cache via Upstash Redis with embedding-similarity lookup."""
+"""Semantic cache via Upstash Redis with embedding-similarity lookup.
+
+CACHE KEYING IS GLOBAL — not per user. User A's query can return a hit on
+user B's cached answer. For this corpus this is acceptable because:
+  - The harness engineering corpus is public-domain reference material.
+  - No user-specific data flows into a query or answer.
+  - Per-user keying would gut the hit rate (the whole point of semantic
+    cache is to share results across the same question phrased differently).
+If this service ever ingests user-specific data, change the index/entry keys
+to namespace by user id and reset cache_stats accordingly.
+"""
 import json
 import math
 import time

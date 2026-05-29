@@ -98,9 +98,16 @@ export function streamQuery(
         }
       }
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        callbacks.onError((err as Error).message ?? "Connection failed");
-      }
+      const e = err as Error;
+      if (e.name === "AbortError") return;
+      // Network-level failures (server down, DNS, CORS preflight failure)
+      // surface as generic `TypeError: Failed to fetch` — translate to
+      // something a user can act on instead of leaking the raw browser error.
+      const friendly =
+        e.name === "TypeError"
+          ? "Unable to connect to the server. Please try again."
+          : (e.message ?? "Connection failed");
+      callbacks.onError(friendly);
     }
   })();
 

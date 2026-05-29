@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     cache_ttl: int = 3600
     rate_limit_rpm: int = 60
     rate_limit_window: int = 60
+    admin_key: str | None = None  # gates /api/metrics; unset → endpoint returns 403
 
     class Config:
         env_file = ".env"

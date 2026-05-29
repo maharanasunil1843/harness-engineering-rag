@@ -159,7 +159,7 @@ function MessageItem({ msg }: { msg: UIMessage }) {
                 {latencySec}s
               </span>
             )}
-            {msg.traceId && (
+            {msg.traceId && process.env.NEXT_PUBLIC_SHOW_TRACES === "true" && (
               <a
                 href={`https://smith.langchain.com/public/${msg.traceId}`}
                 target="_blank"
@@ -479,15 +479,17 @@ export default function ChatPage() {
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href="https://smith.langchain.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1"
-          >
-            LangSmith
-            <ExternalLink className="w-3 h-3" />
-          </a>
+          {process.env.NEXT_PUBLIC_SHOW_TRACES === "true" && (
+            <a
+              href="https://smith.langchain.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1"
+            >
+              LangSmith
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
           <UserButton
             appearance={{
               elements: {
