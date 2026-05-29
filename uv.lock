@@ -813,8 +813,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
-    { name = "beautifulsoup4" },
-    { name = "faker" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain-anthropic" },
@@ -823,23 +821,16 @@ dependencies = [
     { name = "langgraph" },
     { name = "langgraph-supervisor" },
     { name = "langsmith" },
-    { name = "lxml" },
     { name = "mangum" },
     { name = "openai" },
-    { name = "pdfplumber" },
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
     { name = "pydantic-settings" },
-    { name = "pymupdf" },
-    { name = "python-docx" },
     { name = "python-dotenv" },
-    { name = "ragas" },
-    { name = "rank-bm25" },
     { name = "sqlalchemy" },
     { name = "sse-starlette" },
     { name = "tiktoken" },
-    { name = "trafilatura" },
     { name = "upstash-redis" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -850,12 +841,23 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+eval = [
+    { name = "ragas" },
+]
+ingestion = [
+    { name = "beautifulsoup4" },
+    { name = "faker" },
+    { name = "lxml" },
+    { name = "pdfplumber" },
+    { name = "pymupdf" },
+    { name = "python-docx" },
+    { name = "rank-bm25" },
+    { name = "trafilatura" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.104.1" },
-    { name = "beautifulsoup4", specifier = ">=4.14.3" },
-    { name = "faker", specifier = ">=40.19.1" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain-anthropic", specifier = ">=1.4.3" },
@@ -864,23 +866,16 @@ requires-dist = [
     { name = "langgraph", specifier = ">=0.2.50" },
     { name = "langgraph-supervisor", specifier = ">=0.0.31" },
     { name = "langsmith", specifier = ">=0.8.5" },
-    { name = "lxml", specifier = ">=6.1.1" },
     { name = "mangum", specifier = ">=0.21.0" },
     { name = "openai", specifier = ">=2.38.0" },
-    { name = "pdfplumber", specifier = ">=0.11.9" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", specifier = ">=3.3.1" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
-    { name = "pymupdf", specifier = ">=1.27.2.3" },
-    { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
-    { name = "ragas", specifier = ">=0.4.3" },
-    { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "sqlalchemy", specifier = ">=2.0.50" },
     { name = "sse-starlette", specifier = ">=3.4.4" },
     { name = "tiktoken", specifier = ">=0.13.0" },
-    { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "upstash-redis", specifier = ">=1.7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.48.0" },
 ]
@@ -890,6 +885,17 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "ruff", specifier = ">=0.15.14" },
+]
+eval = [{ name = "ragas", specifier = ">=0.4.3" }]
+ingestion = [
+    { name = "beautifulsoup4", specifier = ">=4.14.3" },
+    { name = "faker", specifier = ">=40.19.1" },
+    { name = "lxml", specifier = ">=6.1.1" },
+    { name = "pdfplumber", specifier = ">=0.11.9" },
+    { name = "pymupdf", specifier = ">=1.27.2.3" },
+    { name = "python-docx", specifier = ">=1.2.0" },
+    { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "trafilatura", specifier = ">=2.0.0" },
 ]
 
 [[package]]
