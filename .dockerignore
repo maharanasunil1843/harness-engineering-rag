@@ -1,0 +1,17 @@
+# Keep the backend image small and the build context clean. The data/raw PDFs
+# are already ingested into Supabase, so they are not needed at runtime.
+frontend
+.venv
+**/__pycache__
+**/*.pyc
+.git
+.github
+.ruff_cache
+.pytest_cache
+data/raw
+infra
+.claude
+.env
+.env.*
+*.md
+docs

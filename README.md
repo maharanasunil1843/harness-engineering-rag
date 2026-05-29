@@ -114,6 +114,43 @@ npm install && npm run dev
 # Open http://localhost:3000
 ```
 
+## Live deployment (Vercel + Railway)
+
+Frontend on Vercel, backend on Railway, data layer unchanged (Supabase + Upstash).
+Both platforms auto-deploy on push to `main` via their GitHub integrations — there
+is no GitHub Actions deploy job. See `docs/adr/004-railway-over-lambda.md` for why
+Railway (a long-lived container) rather than the documented Lambda path: API
+Gateway buffers responses and cannot stream SSE, which the chat depends on.
+
+**Deploy order matters** — stand up the backend first so its URL is available for
+the frontend's `NEXT_PUBLIC_API_URL`.
+
+1. **Backend → Railway.** New Project → Deploy from GitHub repo. Railway builds the
+   root `Dockerfile` (config in `railway.json`, healthcheck `/api/health`). Set
+   these variables (values come from your `.env`):
+
+   | Variable | Source |
+   |---|---|
+   | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | model providers |
+   | `DATABASE_URL` | Supabase session pooler connection string |
+   | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Supabase project |
+   | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis |
+   | `LANGSMITH_API_KEY` | LangSmith (or set `LANGSMITH_TRACING=false`) |
+   | `ADMIN_KEY` | optional; gates `/api/metrics` |
+
+2. **Frontend → Vercel.** Import the repo, set **Root Directory** to `frontend`,
+   and add:
+
+   | Variable | Value |
+   |---|---|
+   | `NEXT_PUBLIC_API_URL` | the Railway URL, e.g. `https://<app>.up.railway.app` |
+   | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Clerk |
+   | `NEXT_PUBLIC_SHOW_TRACES` | optional; `true` to surface LangSmith links |
+
+CORS already allows `*.vercel.app` (`app/api/middleware.py`); add a custom domain
+to that regex if you use one. The browser streams SSE directly from Railway, so
+Vercel's serverless response limits do not apply.
+
 ## Evaluation
 
 ```bash
@@ -138,6 +175,8 @@ CI blocks merge if RAGAS faithfulness drops below 0.85. See `.github/workflows/e
 ├── infra/terraform/    # AWS Lambda + API Gateway IaC
 ├── scripts/            # Smoke test, integration tests, DB utilities
 ├── docs/adr/           # Architecture decision records
+├── Dockerfile          # Backend container for Railway (uv, deterministic)
+├── railway.json        # Railway build/deploy config (Dockerfile + healthcheck)
 ├── CLAUDE.md           # Agent harness configuration for this repo
 └── Makefile
 ```
@@ -149,6 +188,7 @@ CI blocks merge if RAGAS faithfulness drops below 0.85. See `.github/workflows/e
 | 001 | Format-specific parsers over Docling/unstructured |
 | 002 | Supabase for MVP, Neon for production serverless |
 | 003 | Heading classifier ratchet, entity quality validation |
+| 004 | Railway over Lambda for the MVP backend (SSE streaming) |
 
 ## AWS production migration path
 
@@ -157,7 +197,7 @@ CI blocks merge if RAGAS faithfulness drops below 0.85. See `.github/workflows/e
 | Supabase (pgvector) | RDS Postgres + Pinecone |
 | Upstash Redis | ElastiCache |
 | Vercel (frontend) | CloudFront + S3 |
-| localhost (backend) | Lambda + API Gateway |
+| Railway (backend) | Lambda + API Gateway |
 | Clerk | Cognito |
 
 Lambda handler (Mangum) and Terraform modules are included. Migration is a configuration change, not a re-architecture.
