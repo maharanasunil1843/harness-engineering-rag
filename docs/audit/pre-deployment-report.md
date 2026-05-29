@@ -63,7 +63,7 @@ Per-query eval breakdown (from `evals/results/eval_results.json`):
 | What failure modes do hooks address and what is the design principle? | 0.920 | 0.901 |
 | **Mean** | **0.9446** | 0.5372 |
 
-(Answer-relevancy zeros on two queries reflect the same RAGAS quirk noted in commit `c33292b` — the gate is faithfulness, which all five queries clear by ≥ 0.85 individually and 0.9446 in aggregate.)
+**Note on `answer_relevancy`:** Two queries scored 0.000 (practitioner lookup, component enumeration). RAGAS `answer_relevancy` reverse-generates questions from the answer and measures similarity to the original query. SQL-path answers that return structured lists produce low scores on this metric because the reverse-generated question doesn't match the original phrasing. This is a known RAGAS characteristic for structured/tabular answers. The production gate is `faithfulness` (0.9446 ≥ 0.85 threshold), which is the correctness guarantee. Answer relevancy is a secondary UX metric.
 
 ## Outstanding items (acceptable pre-MVP)
 
