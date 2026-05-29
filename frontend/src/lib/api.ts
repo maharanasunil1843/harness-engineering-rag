@@ -18,6 +18,32 @@ export interface StreamCallbacks {
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// Backend status events carry a machine-readable `step` (e.g. "retrieving").
+// Map the known steps to user-facing labels; fall back to the raw value.
+const STATUS_LABELS: Record<string, string> = {
+  classifying: "Classifying query...",
+  querying_sql: "Querying database...",
+  retrieving: "Retrieving sources...",
+  synthesizing: "Synthesizing answer...",
+};
+
+function humanizeStatus(step: string): string {
+  return STATUS_LABELS[step] ?? step;
+}
+
+// The backend SourceInfo uses `score`; the UI's SourceInfo uses
+// `relevance_score`. Normalize both `source` events and `done.sources`.
+function mapSource(raw: Record<string, unknown>): SourceInfo {
+  return {
+    doc_title: (raw.doc_title as string) ?? (raw.doc_id as string) ?? "Untitled",
+    element_type: (raw.element_type as string) ?? "text",
+    relevance_score:
+      (raw.relevance_score as number) ?? (raw.score as number) ?? 0,
+    snippet: (raw.snippet as string) ?? "",
+    source_file: raw.source_file as string | undefined,
+  };
+}
+
 export function streamQuery(
   query: string,
   callbacks: StreamCallbacks
@@ -48,33 +74,54 @@ export function streamQuery(
 
       const decoder = new TextDecoder();
       let buffer = "";
+      // sse-starlette carries the event kind on a dedicated `event:` line,
+      // NOT inside the JSON `data:` payload. Track it across the lines of
+      // each event block and reset it on the blank separator line.
+      let eventType = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
+        // Split on LF; the server uses CRLF line endings, so strip a
+        // trailing CR from each line before inspecting it.
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
+        for (const rawLine of lines) {
+          const line = rawLine.replace(/\r$/, "");
+          if (line === "") {
+            // Blank line terminates the current event block.
+            eventType = "";
+            continue;
+          }
+          if (line.startsWith("event:")) {
+            eventType = line.slice(6).trim();
+            continue;
+          }
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
           try {
             const event = JSON.parse(data) as Record<string, unknown>;
-            switch (event.type) {
+            switch (eventType) {
               case "status":
                 callbacks.onStatus(
-                  (event.message as string) ?? (event.status as string) ?? ""
+                  humanizeStatus(
+                    (event.step as string) ??
+                      (event.message as string) ??
+                      (event.status as string) ??
+                      ""
+                  )
                 );
                 break;
               case "source":
-                callbacks.onSource((event.source as SourceInfo) ?? (event as unknown as SourceInfo));
+                callbacks.onSource(mapSource(event));
                 break;
               case "token":
                 callbacks.onToken(
-                  (event.token as string) ?? (event.text as string) ?? ""
+                  (event.text as string) ?? (event.token as string) ?? ""
                 );
                 break;
               case "done":
@@ -83,7 +130,11 @@ export function streamQuery(
                   trace_id: event.trace_id as string | undefined,
                   latency_ms: event.latency_ms as number | undefined,
                   cache_hit: event.cache_hit as boolean | undefined,
-                  sources: event.sources as SourceInfo[] | undefined,
+                  sources: Array.isArray(event.sources)
+                    ? (event.sources as Record<string, unknown>[]).map(
+                        mapSource
+                      )
+                    : undefined,
                 });
                 break;
               case "error":

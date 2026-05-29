@@ -14,6 +14,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { streamQuery } from "@/lib/api";
+import { Markdown } from "@/components/Markdown";
 import type { SourceInfo } from "@/lib/types";
 import {
   createSession,
@@ -128,7 +129,7 @@ function MessageItem({ msg }: { msg: UIMessage }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] space-y-1">
-        <div className="px-4 py-3 rounded-2xl rounded-tl-sm bg-[#12121A] border border-[#1E1E2E] text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">
+        <div className="px-4 py-3 rounded-2xl rounded-tl-sm bg-[#12121A] border border-[#1E1E2E] text-sm text-zinc-200 leading-relaxed">
           {msg.isStreaming && !msg.content && msg.status ? (
             <StatusIndicator status={msg.status} />
           ) : (
@@ -137,12 +138,12 @@ function MessageItem({ msg }: { msg: UIMessage }) {
                 <StatusIndicator status={msg.status} />
               )}
               {msg.content && (
-                <span>
-                  {msg.content}
+                <div>
+                  <Markdown content={msg.content} />
                   {msg.isStreaming && (
                     <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-text-bottom" />
                   )}
-                </span>
+                </div>
               )}
             </>
           )}
