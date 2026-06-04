@@ -17,7 +17,7 @@ Agentic RAG MVP over the harness engineering corpus (Trivedy, Osmani, Anthropic 
 - Claude routing: Opus 4.7 (planner), Sonnet 4.6 (synthesizer), Haiku 4.5 (workers).
 - OpenAI text-embedding-3-small for embeddings (1536-dim).
 - FastAPI backend, Next.js frontend, Mangum for Lambda packaging.
-- Observability via LangSmith + OpenTelemetry GenAI conventions.
+- Observability via LangSmith per-hop tracing.
 
 ## Parsing decisions
 
