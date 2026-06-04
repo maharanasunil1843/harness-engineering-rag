@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UserButton } from "@clerk/nextjs";
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
   ExternalLink,
   Loader2,
   Plus,
   Send,
+  Sparkles,
   Trash2,
   ChevronDown,
   ChevronUp,
@@ -33,6 +36,13 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+const SUGGESTIONS = [
+  "What is a harness in the context of AI agents?",
+  "List all components in the safety category",
+  "What failure modes do hooks address?",
+  "How are harness principles applied in manufacturing?",
+];
+
 function ConfidenceBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   const cls =
@@ -47,6 +57,37 @@ function ConfidenceBadge({ score }: { score: number }) {
     >
       {pct}% confidence
     </span>
+  );
+}
+
+function CacheBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded border border-green-800 bg-green-900/30 px-1.5 py-0.5 font-mono text-[11px] text-green-400">
+      <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+      cache hit
+    </span>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // clipboard unavailable (insecure context) — silently ignore
+        }
+      }}
+      className="inline-flex items-center gap-1 text-[11px] text-zinc-600 transition-colors hover:text-zinc-300"
+      aria-label="Copy answer"
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {copied ? "Copied" : "Copy"}
+    </button>
   );
 }
 
@@ -154,12 +195,13 @@ function MessageItem({ msg }: { msg: UIMessage }) {
             {msg.confidence !== undefined && (
               <ConfidenceBadge score={msg.confidence} />
             )}
+            {msg.cacheHit && <CacheBadge />}
             {latencySec && (
-              <span className="text-[11px] text-zinc-600 font-mono">
-                {msg.cacheHit ? "cache hit · " : ""}
+              <span className="font-mono text-[11px] text-zinc-600">
                 {latencySec}s
               </span>
             )}
+            {msg.content && <CopyButton text={msg.content} />}
             {msg.traceId && process.env.NEXT_PUBLIC_SHOW_TRACES === "true" && (
               <a
                 href={`https://smith.langchain.com/public/${msg.traceId}`}
@@ -286,9 +328,22 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
 
+  const handleMessagesScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    nearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  // Only auto-follow new tokens when the user is already at the bottom — don't
+  // yank the view down while they've scrolled up to read sources.
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (nearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, []);
 
   useEffect(() => {
@@ -344,8 +399,9 @@ export default function ChatPage() {
     setSessions(getSessions());
   }
 
-  async function handleSubmit() {
-    if (!input.trim() || isStreaming) return;
+  async function handleSubmit(text?: string) {
+    const q = (text ?? input).trim();
+    if (!q || isStreaming) return;
 
     setConnectionError(null);
 
@@ -360,7 +416,7 @@ export default function ChatPage() {
     const userMsg: UIMessage = {
       id: generateId(),
       role: "user",
-      content: input.trim(),
+      content: q,
       timestamp: Date.now(),
     };
 
@@ -383,7 +439,7 @@ export default function ChatPage() {
     let accumulated = "";
     const accumulatedSources: SourceInfo[] = [];
 
-    abortRef.current = streamQuery(input.trim(), {
+    abortRef.current = streamQuery(q, {
       onStatus(status) {
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantId ? { ...m, status } : m))
@@ -516,15 +572,34 @@ export default function ChatPage() {
         {/* Chat area */}
         <main className="flex flex-col flex-1 min-w-0">
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 min-h-0">
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleMessagesScroll}
+            className="flex-1 overflow-y-auto px-4 py-6 space-y-4 min-h-0"
+          >
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center">
-                <p className="text-zinc-600 text-sm mb-2">
-                  No messages yet. Ask something to get started.
+              <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-[#1E1E2E] bg-[#12121A]">
+                  <Sparkles className="h-5 w-5 text-blue-400" />
+                </div>
+                <p className="text-sm font-medium text-zinc-300">
+                  Ask about harness engineering
                 </p>
-                <p className="text-zinc-700 text-xs">
-                  Try: &quot;What is a wiring harness?&quot;
+                <p className="mt-1 text-xs text-zinc-600">
+                  Agentic RAG over the harness-engineering corpus — pick one to
+                  start.
                 </p>
+                <div className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => void handleSubmit(s)}
+                      className="rounded-lg border border-[#1E1E2E] bg-[#12121A] px-3.5 py-2.5 text-left text-xs leading-snug text-zinc-400 transition-all hover:-translate-y-0.5 hover:border-zinc-700 hover:text-zinc-200"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
