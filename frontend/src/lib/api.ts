@@ -21,6 +21,7 @@ const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 // Backend status events carry a machine-readable `step` (e.g. "retrieving").
 // Map the known steps to user-facing labels; fall back to the raw value.
 const STATUS_LABELS: Record<string, string> = {
+  searching: "Searching cache...",
   classifying: "Classifying query...",
   querying_sql: "Querying database...",
   retrieving: "Retrieving sources...",

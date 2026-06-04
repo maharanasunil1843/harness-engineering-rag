@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from uuid import uuid4
 
 import psycopg
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -22,7 +23,8 @@ from app.api.schemas import (
 from app.config import get_settings
 from app.observability.metrics import get_metrics_snapshot, record_query
 from app.observability.tracing import is_tracing_healthy
-from app.retrieval.cache import cache_stats
+from app.retrieval.cache import cache_get, cache_get_exact, cache_stats
+from app.retrieval.hybrid import _embed_query
 from app.retrieval.rate_limiter import check_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -151,12 +153,49 @@ async def query_stream(request: Request, body: QueryRequest):
     async def event_generator():
         t_start = time.perf_counter()
         intent = "unknown"
+        cache_hit = False
         error = False
         try:
             # Yield the first status event IMMEDIATELY — confirms connection
             # before any LLM call (must be < 500ms).
-            yield {"event": "status", "data": json.dumps({"step": "classifying"})}
+            yield {"event": "status", "data": json.dumps({"step": "searching"})}
             await asyncio.sleep(0)
+
+            # ── Cache-first short-circuit ────────────────────────────────────
+            # Consult the cache BEFORE any LLM call. An identical re-ask hits the
+            # exact-match path with no embedding; otherwise embed once and try the
+            # semantic lookup. On a hit we stream the cached answer and skip
+            # classification, retrieval, and synthesis entirely. count_miss=False
+            # so the fall-through to ask() (which re-checks) counts the miss once.
+            cached = await cache_get_exact(body.query)
+            if cached is None:
+                cached = await cache_get(
+                    body.query, _embed_query(body.query), check_exact=False,
+                    count_miss=False,
+                )
+            if cached is not None:
+                intent = "cache"
+                cache_hit = True
+                cached_sources = _sources_from_answer(cached)
+                for src in cached_sources:
+                    yield {"event": "source", "data": src.model_dump_json()}
+                    await asyncio.sleep(0)
+                # Already-computed answer — stream in big chunks, no typing delay.
+                ctokens = re.findall(r"\S+\s*", cached.answer)
+                for i in range(0, len(ctokens), 60):
+                    yield {"event": "token",
+                           "data": json.dumps({"text": "".join(ctokens[i : i + 60])})}
+                response = QueryResponse(
+                    answer=cached.answer,
+                    sources=cached_sources,
+                    confidence=cached.confidence,
+                    trace_id=str(uuid4()),
+                    latency_ms=(time.perf_counter() - t_start) * 1000,
+                    cache_hit=True,
+                    intent="cache",
+                )
+                yield {"event": "done", "data": response.model_dump_json()}
+                return
 
             async def _run_pipeline():
                 from app.agents.query_rewriter import rewrite_and_classify
@@ -257,7 +296,7 @@ async def query_stream(request: Request, body: QueryRequest):
             record_query(
                 intent=intent,
                 latency_ms=(time.perf_counter() - t_start) * 1000,
-                cache_hit=False,
+                cache_hit=cache_hit,
                 tokens=0,
                 cost=0.0,
                 error=error,

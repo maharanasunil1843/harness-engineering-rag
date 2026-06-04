@@ -98,34 +98,61 @@ def _result_from_entry(entry: dict, similarity: float) -> CacheResult:
     )
 
 
-async def cache_get(query: str, query_embedding: list[float]) -> CacheResult | None:
+async def cache_get_exact(query: str) -> CacheResult | None:
+    """O(1) exact-match lookup (normalized query -> entry); no embedding needed.
+
+    Returns None on miss WITHOUT recording a miss — callers fall through to the
+    semantic scan, which records the hit/miss for the request.
+    """
+    s = get_settings()
+    r = _redis()
+    ttl = s.cache_ttl
+    ekey = _exact_key(query)
+    mapped = r.get(ekey)
+    if not mapped:
+        return None
+    raw = r.get(mapped)
+    if raw:
+        try:
+            entry = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        r.expire(mapped, ttl)  # sliding TTL
+        r.expire(ekey, ttl)
+        r.incr(_HITS_KEY)
+        return _result_from_entry(entry, 1.0)
+    # Mapping outlived its entry — clean both up.
+    r.srem(_INDEX_KEY, mapped)
+    r.delete(ekey)
+    return None
+
+
+async def cache_get(
+    query: str,
+    query_embedding: list[float],
+    *,
+    check_exact: bool = True,
+    count_miss: bool = True,
+) -> CacheResult | None:
+    # count_miss=False lets a caller that will fall through to another cache
+    # check (e.g. the stream handler -> ask()) avoid double-counting the miss.
     s = get_settings()
     r = _redis()
     ttl = s.cache_ttl
     threshold = s.cache_similarity_threshold
 
-    # 1) Exact-match fast path — O(1), no embedding scan.
-    ekey = _exact_key(query)
-    mapped = r.get(ekey)
-    if mapped:
-        raw = r.get(mapped)
-        if raw:
-            try:
-                entry = json.loads(raw)
-                r.expire(mapped, ttl)  # sliding TTL
-                r.expire(ekey, ttl)
-                r.incr(_HITS_KEY)
-                return _result_from_entry(entry, 1.0)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        # Mapping outlived its entry — clean both up.
-        r.srem(_INDEX_KEY, mapped)
-        r.delete(ekey)
+    # 1) Exact-match fast path — O(1), no embedding scan. Callers that already
+    #    ran cache_get_exact pass check_exact=False to skip the duplicate GET.
+    if check_exact:
+        exact = await cache_get_exact(query)
+        if exact is not None:
+            return exact
 
     # 2) Semantic scan — single MGET, then cosine rank.
     entry_keys = list(r.smembers(_INDEX_KEY))
     if not entry_keys:
-        r.incr(_MISSES_KEY)
+        if count_miss:
+            r.incr(_MISSES_KEY)
         return None
 
     values = _mget_all(r, entry_keys)
@@ -160,7 +187,8 @@ async def cache_get(query: str, query_embedding: list[float]) -> CacheResult | N
         r.incr(_HITS_KEY)
         return _result_from_entry(best_entry, best_sim)
 
-    r.incr(_MISSES_KEY)
+    if count_miss:
+        r.incr(_MISSES_KEY)
     return None
 
 
