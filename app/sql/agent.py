@@ -1,4 +1,5 @@
 """Text-to-SQL agent with schema grounding, prompt caching, and self-correction."""
+import asyncio
 import os
 import re
 import time
@@ -166,10 +167,19 @@ def _rows_to_dicts(rows, cursor) -> list[dict]:
     return [dict(zip(cols, row)) for row in rows]
 
 
+def _execute_sql(sql: str) -> list[dict]:
+    # Synchronous DB execution, run via asyncio.to_thread so it doesn't block
+    # the event loop.
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return _rows_to_dicts(cur.fetchall(), cur)
+
+
 @traced("text_to_sql")
 async def text_to_sql(question: str) -> SQLResult:
     s = get_settings()
-    schema_ddl = _build_schema_ddl()
+    schema_ddl = await asyncio.to_thread(_build_schema_ddl)
     client = AsyncAnthropic(api_key=s.anthropic_api_key)
 
     system_block = [
@@ -220,10 +230,7 @@ async def text_to_sql(question: str) -> SQLResult:
         # Execute SQL
         try:
             t0 = time.perf_counter()
-            with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    rows = _rows_to_dicts(cur.fetchall(), cur)
+            rows = await asyncio.to_thread(_execute_sql, sql)
             exec_ms = (time.perf_counter() - t0) * 1000
             break
         except Exception as e:

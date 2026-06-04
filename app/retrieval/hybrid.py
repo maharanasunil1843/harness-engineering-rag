@@ -1,10 +1,11 @@
 """Hybrid retrieval: dense (pgvector) + sparse (tsvector) fused with RRF."""
+import asyncio
 import json
 from typing import Any
 
 import psycopg
 from pgvector.psycopg import register_vector
-from openai import OpenAI
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -32,10 +33,10 @@ def _get_conn() -> psycopg.Connection:
     return conn
 
 
-def _embed_query(query: str) -> list[float]:
+async def _embed_query(query: str) -> list[float]:
     s = get_settings()
-    client = OpenAI(api_key=s.openai_api_key)
-    resp = client.embeddings.create(model=s.embedding_model, input=query)
+    client = AsyncOpenAI(api_key=s.openai_api_key)
+    resp = await client.embeddings.create(model=s.embedding_model, input=query)
     return resp.data[0].embedding
 
 
@@ -43,21 +44,13 @@ def _rrf_score(ranks: list[int]) -> float:
     return sum(1.0 / (_RRF_K + r) for r in ranks)
 
 
-@traced("hybrid_retrieve")
-async def hybrid_retrieve(
-    query: str,
-    top_k: int = 10,
-    metadata_filter: dict | None = None,
-    query_embedding: list[float] | None = None,
-) -> list[RetrievedChunk]:
-    # Embed query (skip if caller already did it)
-    if query_embedding is None:
-        query_embedding = _embed_query(query)
+# Synchronous DB fetches, run via asyncio.to_thread so the psycopg calls don't
+# block the event loop (a long retrieval would otherwise stall every request).
 
-    meta_json = json.dumps(metadata_filter) if metadata_filter else None
-
+def _fetch_dense_sparse(
+    query: str, query_embedding: list[float], meta_json: str | None
+) -> tuple[list, list]:
     with _get_conn() as conn:
-        # ── Dense retrieval ────────────────────────────────────────────────
         dense_rows = conn.execute(
             """
             SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content,
@@ -72,7 +65,6 @@ async def hybrid_retrieve(
             (query_embedding, meta_json, meta_json, query_embedding, _DENSE_FETCH),
         ).fetchall()
 
-        # ── Sparse retrieval ───────────────────────────────────────────────
         sparse_rows = conn.execute(
             """
             SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content,
@@ -87,6 +79,34 @@ async def hybrid_retrieve(
             """,
             (query, query, meta_json, meta_json, _SPARSE_FETCH),
         ).fetchall()
+    return dense_rows, sparse_rows
+
+
+def _fetch_parents(parent_ids: list[str]) -> list:
+    with _get_conn() as conn:
+        placeholders = ",".join(["%s"] * len(parent_ids))
+        return conn.execute(
+            f"SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content, c.metadata, d.title, d.source_path FROM chunks c JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id IN ({placeholders})",  # noqa: S608
+            parent_ids,
+        ).fetchall()
+
+
+@traced("hybrid_retrieve")
+async def hybrid_retrieve(
+    query: str,
+    top_k: int = 10,
+    metadata_filter: dict | None = None,
+    query_embedding: list[float] | None = None,
+) -> list[RetrievedChunk]:
+    # Embed query (skip if caller already did it)
+    if query_embedding is None:
+        query_embedding = await _embed_query(query)
+
+    meta_json = json.dumps(metadata_filter) if metadata_filter else None
+
+    dense_rows, sparse_rows = await asyncio.to_thread(
+        _fetch_dense_sparse, query, query_embedding, meta_json
+    )
 
     # ── RRF fusion ────────────────────────────────────────────────────────
     # chunk_id -> {rank_in_dense, rank_in_sparse, row_data}
@@ -142,12 +162,7 @@ async def hybrid_retrieve(
 
     parent_chunks: list[RetrievedChunk] = []
     if parent_ids:
-        with _get_conn() as conn:
-            placeholders = ",".join(["%s"] * len(parent_ids))
-            parent_rows = conn.execute(
-                f"SELECT c.chunk_id, c.doc_id, c.content, c.element_type, c.raw_content, c.metadata, d.title, d.source_path FROM chunks c JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id IN ({placeholders})",  # noqa: S608
-                list(parent_ids),
-            ).fetchall()
+        parent_rows = await asyncio.to_thread(_fetch_parents, list(parent_ids))
         for pr in parent_rows:
             raw = pr[4]
             if isinstance(raw, str):

@@ -61,7 +61,7 @@ async def _node_classify(state: AgentState) -> dict[str, Any]:
 
 async def _node_embed(state: AgentState) -> dict[str, Any]:
     # Embed the STANDALONE query (resolved follow-up), not the raw text.
-    return {"query_embedding": _embed_query(_standalone(state))}
+    return {"query_embedding": await _embed_query(_standalone(state))}
 
 
 async def _node_cache_check(state: AgentState) -> dict[str, Any]:

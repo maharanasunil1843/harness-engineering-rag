@@ -58,7 +58,7 @@ async def test_cache_roundtrip_hits_on_second_query():
     from app.retrieval.hybrid import _embed_query
 
     q = "integration-test query — cache roundtrip"
-    emb = _embed_query(q)
+    emb = await _embed_query(q)
 
     miss = await cache_get(q, emb)
     assert miss is None
