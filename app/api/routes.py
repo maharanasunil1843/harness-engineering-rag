@@ -25,6 +25,7 @@ from app.observability.metrics import get_metrics_snapshot, record_query
 from app.observability.tracing import is_tracing_healthy
 from app.retrieval.cache import cache_get_exact, cache_stats
 from app.retrieval.rate_limiter import check_rate_limit
+from app.retrieval.session_memory import append_turns, load_history
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -103,7 +104,7 @@ async def query(request: Request, body: QueryRequest) -> QueryResponse:
     t0 = time.perf_counter()
     error = False
     try:
-        answer = await ask(body.query)
+        answer = await ask(body.query, session_id=body.session_id)
     except Exception as exc:
         error = True
         logger.exception("ask() failed")
@@ -184,27 +185,35 @@ async def query_stream(request: Request, body: QueryRequest):
             yield {"event": "status", "data": json.dumps({"step": "searching"})}
             await asyncio.sleep(0)
 
-            # Exact-match fast path — identical re-ask, no embedding, no scan.
-            cached = await cache_get_exact(body.query)
-            if cached is not None:
-                intent = "cache"
-                cache_hit = True
-                src_list = _sources_from_answer(cached)
-                for src in src_list:
-                    yield {"event": "source", "data": src.model_dump_json()}
-                    await asyncio.sleep(0)
-                async for ev in _emit_answer(
-                    cached.answer, src_list, cached.confidence, str(uuid4()), True
-                ):
-                    yield ev
-                return
+            # Load conversation memory once. The raw exact-match fast path is
+            # only safe on a first turn — a follow-up's raw text is context-
+            # dependent and must not be served by literal match.
+            history = await load_history(body.session_id)
+
+            if not history:
+                cached = await cache_get_exact(body.query)
+                if cached is not None:
+                    intent = "cache"
+                    cache_hit = True
+                    src_list = _sources_from_answer(cached)
+                    for src in src_list:
+                        yield {"event": "source", "data": src.model_dump_json()}
+                        await asyncio.sleep(0)
+                    async for ev in _emit_answer(
+                        cached.answer, src_list, cached.confidence, str(uuid4()), True
+                    ):
+                        yield ev
+                    await append_turns(body.session_id, body.query, cached.answer)
+                    return
 
             # Otherwise run the pipeline exactly ONCE, streaming node-by-node.
-            # The graph's own cache_check handles semantic hits; classification
-            # and retrieval are no longer duplicated by this handler.
+            # ask_stream resolves follow-ups against `history`, keys the cache on
+            # the standalone query, and persists the turn (append_memory node).
             final_answer = None
             async with asyncio.timeout(_STREAM_TIMEOUT_S):
-                async for kind, payload in ask_stream(body.query):
+                async for kind, payload in ask_stream(
+                    body.query, session_id=body.session_id, history=history
+                ):
                     if kind == "intent":
                         intent = payload
                     elif kind == "status":

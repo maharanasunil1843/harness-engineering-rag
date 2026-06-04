@@ -49,7 +49,12 @@ The knowledge base contains:
 3. Both — use "hybrid" when the answer needs document prose AND structured data joined.
 4. Neither — use "direct" ONLY for greetings or clearly out-of-scope questions (see rule above).
 
-Rewrite the query for optimal retrieval: expand abbreviations, resolve pronouns, add domain context.\
+Rewrite the query for optimal retrieval: expand abbreviations, resolve pronouns, add domain context.
+
+If a "Conversation so far" is provided and the current message is a follow-up (it refers to earlier \
+turns via pronouns like "it/that/those/they", or is otherwise not self-contained), rewrite it into a \
+FULLY STANDALONE question that embeds the needed context from the conversation, so it can be answered \
+without the history. Classify based on that standalone meaning.\
 """
 
 
@@ -60,10 +65,31 @@ class ClassifiedQuery(BaseModel):
     reasoning: str
 
 
+def _history_context(history: list[dict] | None) -> str:
+    """Render the last few turns as compact context for follow-up resolution."""
+    if not history:
+        return ""
+    lines = []
+    for t in history[-6:]:
+        role = t.get("role", "user")
+        content = (t.get("content") or "")[:500]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
 @traced("query_rewriter")
-async def rewrite_and_classify(query: str) -> ClassifiedQuery:
+async def rewrite_and_classify(
+    query: str, history: list[dict] | None = None
+) -> ClassifiedQuery:
     s = get_settings()
     client = AsyncAnthropic(api_key=s.anthropic_api_key)
+
+    convo = _history_context(history)
+    user_content = (
+        f"Conversation so far:\n{convo}\n\nCurrent user message: {query}"
+        if convo
+        else query
+    )
 
     resp = await client.messages.create(
         model=s.planner_model,
@@ -71,7 +97,7 @@ async def rewrite_and_classify(query: str) -> ClassifiedQuery:
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         tools=[_CLASSIFY_TOOL],
         tool_choice={"type": "tool", "name": "classify_query"},
-        messages=[{"role": "user", "content": query}],
+        messages=[{"role": "user", "content": user_content}],
     )
 
     track_token_usage(

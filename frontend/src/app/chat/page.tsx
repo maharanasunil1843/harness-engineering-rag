@@ -439,7 +439,9 @@ export default function ChatPage() {
     let accumulated = "";
     const accumulatedSources: SourceInfo[] = [];
 
-    abortRef.current = streamQuery(q, {
+    abortRef.current = streamQuery(
+      q,
+      {
       onStatus(status) {
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantId ? { ...m, status } : m))
@@ -505,7 +507,9 @@ export default function ChatPage() {
         setIsStreaming(false);
         abortRef.current = null;
       },
-    });
+      },
+      sessionId,
+    );
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

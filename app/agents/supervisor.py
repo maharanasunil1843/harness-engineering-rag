@@ -1,4 +1,11 @@
-"""LangGraph supervisor orchestrating the full agentic RAG pipeline."""
+"""LangGraph supervisor orchestrating the full agentic RAG pipeline.
+
+Conversational flow: classify FIRST (the rewriter resolves follow-ups against
+the session history into a STANDALONE query), then embed + cache-check on that
+standalone query, then retrieve/synthesize, then persist the turn. Keying the
+cache on the standalone query keeps follow-ups correct (a raw "what about it?"
+is context-dependent and must not be served by exact text).
+"""
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
@@ -14,11 +21,15 @@ from app.retrieval.cache import cache_get, cache_set
 from app.retrieval.cache_verify import verify_cache_match
 from app.retrieval.hybrid import RetrievedChunk, hybrid_retrieve, _embed_query
 from app.retrieval.rate_limiter import check_rate_limit
+from app.retrieval.session_memory import append_turns, load_history
 from app.sql.agent import SQLResult, text_to_sql
 
 
 class AgentState(TypedDict):
     query: str
+    session_id: str | None
+    history: list[dict]
+    standalone_query: str
     query_embedding: list[float]
     classified: ClassifiedQuery | None
     retrieval_results: list[RetrievedChunk]
@@ -29,20 +40,33 @@ class AgentState(TypedDict):
     error: str | None
 
 
+def _standalone(state: AgentState) -> str:
+    classified = state.get("classified")
+    return classified.rewritten if classified else state["query"]
+
+
 # ── Node implementations ────────────────────────────────────────────────────
 
+async def _node_classify(state: AgentState) -> dict[str, Any]:
+    try:
+        classified = await rewrite_and_classify(state["query"], state.get("history"))
+        return {"classified": classified, "standalone_query": classified.rewritten}
+    except Exception as e:
+        return {"error": f"classify failed: {e}"}
+
+
 async def _node_embed(state: AgentState) -> dict[str, Any]:
-    embedding = _embed_query(state["query"])
-    return {"query_embedding": embedding}
+    # Embed the STANDALONE query (resolved follow-up), not the raw text.
+    return {"query_embedding": _embed_query(_standalone(state))}
 
 
 async def _node_cache_check(state: AgentState) -> dict[str, Any]:
-    # Banded semantic match on the raw query: trust high-similarity hits, verify
-    # gray-zone candidates with a cheap LLM check, miss below the floor.
+    # Banded semantic match on the standalone query: trust high-similarity hits,
+    # verify gray-zone candidates with a cheap LLM check, miss below the floor.
     s = get_settings()
     try:
         hit = await cache_get(
-            state["query"],
+            _standalone(state),
             state["query_embedding"],
             verify=verify_cache_match,
             trust_threshold=s.cache_trust_threshold,
@@ -79,20 +103,10 @@ async def _node_rate_limit(state: AgentState) -> dict[str, Any]:
     return {}
 
 
-async def _node_classify(state: AgentState) -> dict[str, Any]:
-    try:
-        classified = await rewrite_and_classify(state["query"])
-        return {"classified": classified}
-    except Exception as e:
-        return {"error": f"classify failed: {e}"}
-
-
 async def _node_retrieval(state: AgentState) -> dict[str, Any]:
-    classified = state.get("classified")
-    query = classified.rewritten if classified else state["query"]
     try:
         chunks = await hybrid_retrieve(
-            query,
+            _standalone(state),
             top_k=10,
             query_embedding=state.get("query_embedding"),
         )
@@ -102,18 +116,15 @@ async def _node_retrieval(state: AgentState) -> dict[str, Any]:
 
 
 async def _node_sql(state: AgentState) -> dict[str, Any]:
-    classified = state.get("classified")
-    question = classified.rewritten if classified else state["query"]
     try:
-        result = await text_to_sql(question)
+        result = await text_to_sql(_standalone(state))
         return {"sql_result": result}
     except Exception as e:
         return {"error": f"sql failed: {e}", "sql_result": None}
 
 
 async def _node_hybrid_workers(state: AgentState) -> dict[str, Any]:
-    classified = state.get("classified")
-    query = classified.rewritten if classified else state["query"]
+    query = _standalone(state)
     embedding = state.get("query_embedding")
 
     retrieval_task = hybrid_retrieve(query, top_k=10, query_embedding=embedding)
@@ -140,11 +151,13 @@ async def _node_hybrid_workers(state: AgentState) -> dict[str, Any]:
 
 async def _node_synthesize(state: AgentState) -> dict[str, Any]:
     try:
+        # Answer the user's literal question, with the conversation for context.
         answer = await synthesize(
             query=state["query"],
             retrieval_results=state.get("retrieval_results") or None,
             sql_result=state.get("sql_result"),
             trace_id=state["trace_id"],
+            history=state.get("history"),
         )
         return {"answer": answer}
     except Exception as e:
@@ -162,16 +175,31 @@ async def _node_synthesize(state: AgentState) -> dict[str, Any]:
 async def _node_cache_store(state: AgentState) -> dict[str, Any]:
     answer = state.get("answer")
     if answer and not state.get("cache_hit"):
+        # Key on the standalone query. Alias the raw query ONLY on a first turn
+        # (no history) — a follow-up's raw text is context-dependent and must
+        # not become an exact-match key.
+        aliases = [] if state.get("history") else [state["query"]]
         try:
             await cache_set(
-                state["query"],
+                _standalone(state),
                 state["query_embedding"],
                 answer.answer,
                 answer.sources,
                 answer.confidence,
+                alias_queries=aliases,
             )
         except Exception:
             pass  # Cache write failure is non-fatal
+    return {}
+
+
+async def _node_append_memory(state: AgentState) -> dict[str, Any]:
+    answer = state.get("answer")
+    if state.get("session_id") and answer:
+        try:
+            await append_turns(state["session_id"], state["query"], answer.answer)
+        except Exception:
+            pass  # Memory write failure is non-fatal
     return {}
 
 
@@ -179,18 +207,13 @@ async def _node_cache_store(state: AgentState) -> dict[str, Any]:
 
 def _route_after_cache(state: AgentState) -> str:
     if state.get("cache_hit"):
-        return "done"
+        return "cache_store"
     return "rate_limit"
 
 
 def _route_after_rate_limit(state: AgentState) -> str:
-    # If answer is already set, rate limit fired
-    if state.get("answer"):
-        return "done"
-    return "classify"
-
-
-def _route_after_classify(state: AgentState) -> str:
+    if state.get("answer"):  # rate limit fired
+        return "cache_store"
     classified = state.get("classified")
     if not classified:
         return "retrieval"  # fallback
@@ -209,33 +232,32 @@ def _route_after_classify(state: AgentState) -> str:
 def _build_graph() -> Any:
     g: StateGraph = StateGraph(AgentState)
 
+    g.add_node("classify", _node_classify)
     g.add_node("embed", _node_embed)
     g.add_node("cache_check", _node_cache_check)
     g.add_node("rate_limit", _node_rate_limit)
-    g.add_node("classify", _node_classify)
     g.add_node("retrieval", _node_retrieval)
     g.add_node("sql", _node_sql)
     g.add_node("hybrid", _node_hybrid_workers)
     g.add_node("synthesize", _node_synthesize)
     g.add_node("cache_store", _node_cache_store)
+    g.add_node("append_memory", _node_append_memory)
 
-    g.set_entry_point("embed")
+    # classify (resolve follow-up) → embed standalone → cache-check standalone.
+    g.set_entry_point("classify")
+    g.add_edge("classify", "embed")
     g.add_edge("embed", "cache_check")
 
     g.add_conditional_edges(
         "cache_check",
         _route_after_cache,
-        {"done": "cache_store", "rate_limit": "rate_limit"},
+        {"cache_store": "cache_store", "rate_limit": "rate_limit"},
     )
     g.add_conditional_edges(
         "rate_limit",
         _route_after_rate_limit,
-        {"done": "cache_store", "classify": "classify"},
-    )
-    g.add_conditional_edges(
-        "classify",
-        _route_after_classify,
         {
+            "cache_store": "cache_store",
             "retrieval": "retrieval",
             "sql": "sql",
             "hybrid": "hybrid",
@@ -247,7 +269,8 @@ def _build_graph() -> Any:
     g.add_edge("sql", "synthesize")
     g.add_edge("hybrid", "synthesize")
     g.add_edge("synthesize", "cache_store")
-    g.add_edge("cache_store", END)
+    g.add_edge("cache_store", "append_memory")
+    g.add_edge("append_memory", END)
 
     return g.compile()
 
@@ -255,80 +278,88 @@ def _build_graph() -> Any:
 _graph = _build_graph()
 
 
-async def ask(query: str) -> SynthesizedAnswer:
-    """Public API: run the full agentic RAG pipeline for a query."""
-    trace_id = str(uuid4())
-    initial_state: AgentState = {
+def _initial_state(query: str, session_id: str | None, history: list[dict]) -> AgentState:
+    return {
         "query": query,
+        "session_id": session_id,
+        "history": history,
+        "standalone_query": "",
         "query_embedding": [],
         "classified": None,
         "retrieval_results": [],
         "sql_result": None,
         "answer": None,
-        "trace_id": trace_id,
+        "trace_id": str(uuid4()),
         "cache_hit": False,
         "error": None,
     }
-    final_state = await _graph.ainvoke(initial_state)
+
+
+async def ask(
+    query: str,
+    *,
+    session_id: str | None = None,
+    history: list[dict] | None = None,
+) -> SynthesizedAnswer:
+    """Public API: run the full agentic RAG pipeline for a query."""
+    if history is None:
+        history = await load_history(session_id)
+    state = _initial_state(query, session_id, history)
+    final_state = await _graph.ainvoke(state)
     answer = final_state.get("answer")
     if answer is None:
         answer = SynthesizedAnswer(
             answer="No answer produced.",
             sources=[],
             confidence=0.0,
-            trace_id=trace_id,
+            trace_id=state["trace_id"],
             latency_ms=0.0,
         )
     answer.cache_hit = bool(final_state.get("cache_hit", False))
     return answer
 
 
-async def ask_stream(query: str) -> AsyncIterator[tuple[str, Any]]:
+async def ask_stream(
+    query: str,
+    *,
+    session_id: str | None = None,
+    history: list[dict] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     """Run the pipeline ONCE, streaming events as graph nodes complete.
 
-    Unlike `ask()` (which returns only the final answer), this surfaces
-    intermediate progress so the API can emit live SSE events without
-    re-running classification/retrieval. Event kinds:
-
-      ("intent", str)                  — routing intent, once classified
-      ("status", {"step": ...})        — user-facing progress step
-      ("sources", list[RetrievedChunk])— retrieved chunks, as found
-      ("answer", SynthesizedAnswer)    — final answer (last event)
+    Event kinds: ("intent", str) · ("status", {"step": ...}) ·
+    ("sources", list[RetrievedChunk]) · ("answer", SynthesizedAnswer).
     """
-    trace_id = str(uuid4())
-    initial_state: AgentState = {
-        "query": query,
-        "query_embedding": [],
-        "classified": None,
-        "retrieval_results": [],
-        "sql_result": None,
-        "answer": None,
-        "trace_id": trace_id,
-        "cache_hit": False,
-        "error": None,
-    }
+    if history is None:
+        history = await load_history(session_id)
+    state = _initial_state(query, session_id, history)
 
     final_answer: SynthesizedAnswer | None = None
     cache_hit = False
+    local_intent: str | None = None
 
     # stream_mode="updates" yields {node_name: state_delta} after each node.
-    async for update in _graph.astream(initial_state, stream_mode="updates"):
+    async for update in _graph.astream(state, stream_mode="updates"):
         for node, delta in update.items():
             if not isinstance(delta, dict):
                 continue
 
-            if node == "cache_check" and delta.get("cache_hit"):
+            if delta.get("cache_hit"):
                 cache_hit = True
 
             if node == "classify":
                 classified = delta.get("classified")
                 if classified is not None:
-                    yield ("intent", classified.intent)
-                    if classified.intent == "sql":
+                    local_intent = classified.intent
+                    yield ("intent", local_intent)
+            elif node == "cache_check":
+                # Announce the next step only if we didn't just cache-hit.
+                if not delta.get("cache_hit") and local_intent is not None:
+                    if local_intent == "sql":
                         yield ("status", {"step": "querying_sql"})
-                    elif classified.intent in ("retrieval", "hybrid"):
+                    elif local_intent in ("retrieval", "hybrid"):
                         yield ("status", {"step": "retrieving",
-                                          "intent": classified.intent})
+                                          "intent": local_intent})
                     else:  # direct — straight to synthesis
                         yield ("status", {"step": "synthesizing"})
             elif node in ("retrieval", "hybrid"):
@@ -347,7 +378,7 @@ async def ask_stream(query: str) -> AsyncIterator[tuple[str, Any]]:
             answer="No answer produced.",
             sources=[],
             confidence=0.0,
-            trace_id=trace_id,
+            trace_id=state["trace_id"],
             latency_ms=0.0,
         )
     final_answer.cache_hit = cache_hit

@@ -47,7 +47,8 @@ function mapSource(raw: Record<string, unknown>): SourceInfo {
 
 export function streamQuery(
   query: string,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  sessionId?: string | null
 ): AbortController {
   const controller = new AbortController();
 
@@ -56,7 +57,7 @@ export function streamQuery(
       const response = await fetch(`${apiUrl}/api/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, session_id: sessionId ?? null }),
         signal: controller.signal,
       });
 

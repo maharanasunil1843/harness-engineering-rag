@@ -17,6 +17,7 @@ Rules:
 - Cite sources inline as [Source N]. Every factual claim must have a citation.
 - If sources contain conflicting information, acknowledge the disagreement and explain both positions.
 - If sources don't contain enough information, say so honestly — never fabricate.
+- If a "Conversation so far" is provided, use it for continuity (the question may build on earlier turns), but ground every factual claim in the Sources, not the conversation.
 - For hybrid queries (both retrieval and SQL results), weave both into a coherent answer.
 - End with a confidence self-assessment: a float 0.0-1.0 on the very last line, formatted as: Confidence: <float>\
 """
@@ -71,6 +72,7 @@ async def synthesize(
     retrieval_results: list[RetrievedChunk] | None,
     sql_result: SQLResult | None,
     trace_id: str = "",
+    history: list[dict] | None = None,
 ) -> SynthesizedAnswer:
     t0 = time.perf_counter()
     s = get_settings()
@@ -110,9 +112,18 @@ async def synthesize(
     if not source_blocks:
         source_blocks.append("No sources available. Answer from general knowledge only.")
 
+    convo = ""
+    if history:
+        lines = [
+            f"{t.get('role', 'user')}: {(t.get('content') or '')[:500]}"
+            for t in history[-6:]
+        ]
+        convo = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
     user_content = (
-        f"Question: {query}\n\n"
-        "Sources:\n\n"
+        convo
+        + f"Question: {query}\n\n"
+        + "Sources:\n\n"
         + "\n\n---\n\n".join(source_blocks)
     )
 

@@ -9,7 +9,7 @@ def client(monkeypatch):
     from app.agents import supervisor
     from app.agents.synthesizer import SynthesizedAnswer
 
-    async def fake_ask(q):
+    async def fake_ask(q, **kwargs):
         return SynthesizedAnswer(
             answer=f"stub-answer for {q}",
             sources=[],

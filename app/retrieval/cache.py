@@ -218,7 +218,13 @@ async def cache_set(
     answer: str,
     sources: list[dict],
     confidence: float = 0.5,
+    *,
+    alias_queries: list[str] | None = None,
 ) -> None:
+    """Store an answer keyed on `query`. `alias_queries` get their own exact-match
+    keys pointing at the same entry — used to alias a first-turn raw query to its
+    standalone form, while a follow-up (context-dependent raw text) is keyed only
+    on the standalone query."""
     s = get_settings()
     r = _redis()
     ttl = s.cache_ttl
@@ -240,8 +246,10 @@ async def cache_set(
     # ex=ttl sets value + expiry in one round-trip (vs a separate EXPIRE).
     r.set(entry_key, payload, ex=ttl)
     r.sadd(_INDEX_KEY, entry_key)
-    # Exact-match index → entry, for the O(1) re-ask fast path.
-    r.set(_exact_key(query), entry_key, ex=ttl)
+    # Exact-match keys → entry, for the O(1) re-ask fast path. De-dup so the
+    # canonical query and an identical alias aren't written twice.
+    for q in {query, *(alias_queries or [])}:
+        r.set(_exact_key(q), entry_key, ex=ttl)
 
 
 async def cache_stats() -> dict:
