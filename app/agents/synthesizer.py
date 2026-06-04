@@ -2,7 +2,7 @@
 import re
 import time
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -74,7 +74,7 @@ async def synthesize(
 ) -> SynthesizedAnswer:
     t0 = time.perf_counter()
     s = get_settings()
-    client = Anthropic(api_key=s.anthropic_api_key)
+    client = AsyncAnthropic(api_key=s.anthropic_api_key)
 
     source_blocks: list[str] = []
     sources: list[dict] = []
@@ -116,7 +116,7 @@ async def synthesize(
         + "\n\n---\n\n".join(source_blocks)
     )
 
-    resp = client.messages.create(
+    resp = await client.messages.create(
         model=s.synthesizer_model,
         max_tokens=2048,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],

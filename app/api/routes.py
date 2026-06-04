@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from upstash_redis import Redis
 
-from app.agents.supervisor import ask
+from app.agents.supervisor import ask, ask_stream
 from app.api.schemas import (
     HealthResponse,
     QueryRequest,
@@ -23,8 +23,7 @@ from app.api.schemas import (
 from app.config import get_settings
 from app.observability.metrics import get_metrics_snapshot, record_query
 from app.observability.tracing import is_tracing_healthy
-from app.retrieval.cache import cache_get, cache_get_exact, cache_stats
-from app.retrieval.hybrid import _embed_query
+from app.retrieval.cache import cache_get_exact, cache_stats
 from app.retrieval.rate_limiter import check_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -155,130 +154,92 @@ async def query_stream(request: Request, body: QueryRequest):
         intent = "unknown"
         cache_hit = False
         error = False
+
+        # Emit the answer's tokens + the final `done` event. No typing delay on
+        # a cache hit (the answer is already computed); ~20-word chunks with a
+        # 50ms beat otherwise. `\S+\s*` keeps each word's trailing whitespace so
+        # the Markdown newlines survive (a plain .split() flattens the answer).
+        async def _emit_answer(text, sources, confidence, trace_id, hit):
+            tokens = re.findall(r"\S+\s*", text)
+            step = 60 if hit else 20
+            for i in range(0, len(tokens), step):
+                yield {"event": "token",
+                       "data": json.dumps({"text": "".join(tokens[i : i + step])})}
+                if not hit:
+                    await asyncio.sleep(0.05)
+            response = QueryResponse(
+                answer=text,
+                sources=sources,
+                confidence=confidence,
+                trace_id=trace_id,
+                latency_ms=(time.perf_counter() - t_start) * 1000,
+                cache_hit=hit,
+                intent="cache" if hit else intent,
+            )
+            yield {"event": "done", "data": response.model_dump_json()}
+
         try:
-            # Yield the first status event IMMEDIATELY — confirms connection
-            # before any LLM call (must be < 500ms).
+            # First status event IMMEDIATELY — confirms the connection before any
+            # network call (must be < 500ms).
             yield {"event": "status", "data": json.dumps({"step": "searching"})}
             await asyncio.sleep(0)
 
-            # ── Cache-first short-circuit ────────────────────────────────────
-            # Consult the cache BEFORE any LLM call. An identical re-ask hits the
-            # exact-match path with no embedding; otherwise embed once and try the
-            # semantic lookup. On a hit we stream the cached answer and skip
-            # classification, retrieval, and synthesis entirely. count_miss=False
-            # so the fall-through to ask() (which re-checks) counts the miss once.
+            # Exact-match fast path — identical re-ask, no embedding, no scan.
             cached = await cache_get_exact(body.query)
-            if cached is None:
-                cached = await cache_get(
-                    body.query, _embed_query(body.query), check_exact=False,
-                    count_miss=False,
-                )
             if cached is not None:
                 intent = "cache"
                 cache_hit = True
-                cached_sources = _sources_from_answer(cached)
-                for src in cached_sources:
+                src_list = _sources_from_answer(cached)
+                for src in src_list:
                     yield {"event": "source", "data": src.model_dump_json()}
                     await asyncio.sleep(0)
-                # Already-computed answer — stream in big chunks, no typing delay.
-                ctokens = re.findall(r"\S+\s*", cached.answer)
-                for i in range(0, len(ctokens), 60):
-                    yield {"event": "token",
-                           "data": json.dumps({"text": "".join(ctokens[i : i + 60])})}
-                response = QueryResponse(
-                    answer=cached.answer,
-                    sources=cached_sources,
-                    confidence=cached.confidence,
-                    trace_id=str(uuid4()),
-                    latency_ms=(time.perf_counter() - t_start) * 1000,
-                    cache_hit=True,
-                    intent="cache",
-                )
-                yield {"event": "done", "data": response.model_dump_json()}
+                async for ev in _emit_answer(
+                    cached.answer, src_list, cached.confidence, str(uuid4()), True
+                ):
+                    yield ev
                 return
 
-            async def _run_pipeline():
-                from app.agents.query_rewriter import rewrite_and_classify
-                from app.retrieval.hybrid import _embed_query, hybrid_retrieve
+            # Otherwise run the pipeline exactly ONCE, streaming node-by-node.
+            # The graph's own cache_check handles semantic hits; classification
+            # and retrieval are no longer duplicated by this handler.
+            final_answer = None
+            async with asyncio.timeout(_STREAM_TIMEOUT_S):
+                async for kind, payload in ask_stream(body.query):
+                    if kind == "intent":
+                        intent = payload
+                    elif kind == "status":
+                        yield {"event": "status", "data": json.dumps(payload)}
+                        await asyncio.sleep(0)
+                    elif kind == "sources":
+                        rels = _normalize_relevance([c.score for c in payload])
+                        for chunk, rel in zip(payload, rels):
+                            src = SourceInfo(
+                                chunk_id=chunk.chunk_id,
+                                doc_id=chunk.doc_id,
+                                doc_title=chunk.metadata.get("title", chunk.doc_id),
+                                element_type=chunk.element_type,
+                                score=rel,
+                                source_type="retrieval",
+                            )
+                            yield {"event": "source", "data": src.model_dump_json()}
+                            await asyncio.sleep(0)
+                    elif kind == "answer":
+                        final_answer = payload
 
-                classified = await rewrite_and_classify(body.query)
-                local_intent = classified.intent
+            if final_answer is None:
+                raise RuntimeError("pipeline produced no answer")
 
-                events: list[dict] = []
-                sources_emitted: list[SourceInfo] = []
-
-                if local_intent == "sql":
-                    events.append({"event": "status",
-                                   "data": json.dumps({"step": "querying_sql"})})
-                elif local_intent in ("retrieval", "hybrid"):
-                    events.append({"event": "status",
-                                   "data": json.dumps({"step": "retrieving",
-                                                       "intent": local_intent})})
-
-                if local_intent in ("retrieval", "hybrid"):
-                    embedding = _embed_query(classified.rewritten)
-                    chunks = await hybrid_retrieve(
-                        classified.rewritten, top_k=10, query_embedding=embedding
-                    )
-                    rel_scores = _normalize_relevance([c.score for c in chunks])
-                    for chunk, rel in zip(chunks, rel_scores):
-                        src = SourceInfo(
-                            chunk_id=chunk.chunk_id,
-                            doc_id=chunk.doc_id,
-                            doc_title=chunk.metadata.get("title", chunk.doc_id),
-                            element_type=chunk.element_type,
-                            score=rel,
-                            source_type="retrieval",
-                        )
-                        sources_emitted.append(src)
-                        events.append({"event": "source",
-                                       "data": src.model_dump_json()})
-
-                events.append({"event": "status",
-                               "data": json.dumps({"step": "synthesizing"})})
-
-                answer = await ask(body.query)
-                return local_intent, events, answer
-
-            # Wall-clock cap for the whole pipeline call.
-            try:
-                intent, events, answer = await asyncio.wait_for(
-                    _run_pipeline(), timeout=_STREAM_TIMEOUT_S
-                )
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError(
-                    f"stream exceeded {_STREAM_TIMEOUT_S:.0f}s timeout"
-                ) from exc
-
-            for ev in events:
+            cache_hit = final_answer.cache_hit
+            if cache_hit:
+                intent = "cache"
+            async for ev in _emit_answer(
+                final_answer.answer,
+                _sources_from_answer(final_answer),
+                final_answer.confidence,
+                final_answer.trace_id,
+                cache_hit,
+            ):
                 yield ev
-                await asyncio.sleep(0)
-
-            # Stream tokens in ~20-word chunks with a 50ms delay. Tokenize with
-            # each word carrying its trailing whitespace (`\S+\s*`) so the
-            # original newlines survive — the answer is Markdown, and a plain
-            # .split() collapses every newline, flattening headings, lists, and
-            # tables into one unrenderable paragraph on the client.
-            tokens = re.findall(r"\S+\s*", answer.answer)
-            chunk_size = 20
-            for i in range(0, len(tokens), chunk_size):
-                chunk_text = "".join(tokens[i : i + chunk_size])
-                yield {"event": "token", "data": json.dumps({"text": chunk_text})}
-                await asyncio.sleep(0.05)
-
-            response = QueryResponse(
-                answer=answer.answer,
-                sources=_sources_from_answer(answer),
-                confidence=answer.confidence,
-                trace_id=answer.trace_id,
-                # End-to-end wall-clock for this request. answer.latency_ms is
-                # synthesis-only (and 0.0 on a cache hit), so it understated the
-                # real latency the user experienced.
-                latency_ms=(time.perf_counter() - t_start) * 1000,
-                cache_hit=answer.cache_hit,
-                intent=intent,
-            )
-            yield {"event": "done", "data": response.model_dump_json()}
 
         except Exception as exc:
             error = True

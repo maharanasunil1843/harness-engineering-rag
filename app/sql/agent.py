@@ -4,7 +4,7 @@ import re
 import time
 
 import psycopg
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -170,7 +170,7 @@ def _rows_to_dicts(rows, cursor) -> list[dict]:
 async def text_to_sql(question: str) -> SQLResult:
     s = get_settings()
     schema_ddl = _build_schema_ddl()
-    client = Anthropic(api_key=s.anthropic_api_key)
+    client = AsyncAnthropic(api_key=s.anthropic_api_key)
 
     system_block = [
         {
@@ -194,7 +194,7 @@ async def text_to_sql(question: str) -> SQLResult:
 
     for attempt in range(_MAX_RETRIES + 1):
         # Generate SQL
-        resp = client.messages.create(
+        resp = await client.messages.create(
             model=s.worker_model,
             max_tokens=512,
             system=system_block,
@@ -245,7 +245,7 @@ async def text_to_sql(question: str) -> SQLResult:
 
     # Generate natural-language explanation
     rows_preview = rows[:10]
-    explain_resp = client.messages.create(
+    explain_resp = await client.messages.create(
         model=s.worker_model,
         max_tokens=512,
         system=system_block,

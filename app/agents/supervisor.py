@@ -1,5 +1,6 @@
 """LangGraph supervisor orchestrating the full agentic RAG pipeline."""
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
@@ -269,3 +270,74 @@ async def ask(query: str) -> SynthesizedAnswer:
         )
     answer.cache_hit = bool(final_state.get("cache_hit", False))
     return answer
+
+
+async def ask_stream(query: str) -> AsyncIterator[tuple[str, Any]]:
+    """Run the pipeline ONCE, streaming events as graph nodes complete.
+
+    Unlike `ask()` (which returns only the final answer), this surfaces
+    intermediate progress so the API can emit live SSE events without
+    re-running classification/retrieval. Event kinds:
+
+      ("intent", str)                  — routing intent, once classified
+      ("status", {"step": ...})        — user-facing progress step
+      ("sources", list[RetrievedChunk])— retrieved chunks, as found
+      ("answer", SynthesizedAnswer)    — final answer (last event)
+    """
+    trace_id = str(uuid4())
+    initial_state: AgentState = {
+        "query": query,
+        "query_embedding": [],
+        "classified": None,
+        "retrieval_results": [],
+        "sql_result": None,
+        "answer": None,
+        "trace_id": trace_id,
+        "cache_hit": False,
+        "error": None,
+    }
+
+    final_answer: SynthesizedAnswer | None = None
+    cache_hit = False
+
+    # stream_mode="updates" yields {node_name: state_delta} after each node.
+    async for update in _graph.astream(initial_state, stream_mode="updates"):
+        for node, delta in update.items():
+            if not isinstance(delta, dict):
+                continue
+
+            if node == "cache_check" and delta.get("cache_hit"):
+                cache_hit = True
+
+            if node == "classify":
+                classified = delta.get("classified")
+                if classified is not None:
+                    yield ("intent", classified.intent)
+                    if classified.intent == "sql":
+                        yield ("status", {"step": "querying_sql"})
+                    elif classified.intent in ("retrieval", "hybrid"):
+                        yield ("status", {"step": "retrieving",
+                                          "intent": classified.intent})
+                    else:  # direct — straight to synthesis
+                        yield ("status", {"step": "synthesizing"})
+            elif node in ("retrieval", "hybrid"):
+                chunks = delta.get("retrieval_results") or []
+                if chunks:
+                    yield ("sources", chunks)
+                yield ("status", {"step": "synthesizing"})
+            elif node == "sql":
+                yield ("status", {"step": "synthesizing"})
+
+            if delta.get("answer") is not None:
+                final_answer = delta["answer"]
+
+    if final_answer is None:
+        final_answer = SynthesizedAnswer(
+            answer="No answer produced.",
+            sources=[],
+            confidence=0.0,
+            trace_id=trace_id,
+            latency_ms=0.0,
+        )
+    final_answer.cache_hit = cache_hit
+    yield ("answer", final_answer)

@@ -1,7 +1,7 @@
 """Query rewriting and intent classification — the planner/router node."""
 from typing import Literal
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -63,9 +63,9 @@ class ClassifiedQuery(BaseModel):
 @traced("query_rewriter")
 async def rewrite_and_classify(query: str) -> ClassifiedQuery:
     s = get_settings()
-    client = Anthropic(api_key=s.anthropic_api_key)
+    client = AsyncAnthropic(api_key=s.anthropic_api_key)
 
-    resp = client.messages.create(
+    resp = await client.messages.create(
         model=s.planner_model,
         max_tokens=512,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
