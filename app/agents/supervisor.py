@@ -14,6 +14,7 @@ from uuid import uuid4
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
+from app.agents.conversation_summary import summarize_conversation
 from app.agents.query_rewriter import ClassifiedQuery, rewrite_and_classify
 from app.agents.synthesizer import SynthesizedAnswer, synthesize
 from app.config import get_settings
@@ -21,7 +22,7 @@ from app.retrieval.cache import cache_get, cache_set
 from app.retrieval.cache_verify import verify_cache_match
 from app.retrieval.hybrid import RetrievedChunk, hybrid_retrieve, _embed_query
 from app.retrieval.rate_limiter import check_rate_limit
-from app.retrieval.session_memory import append_turns, load_history
+from app.retrieval.session_memory import append_turns, load_memory
 from app.sql.agent import SQLResult, text_to_sql
 
 
@@ -29,6 +30,7 @@ class AgentState(TypedDict):
     query: str
     session_id: str | None
     history: list[dict]
+    summary: str
     standalone_query: str
     query_embedding: list[float]
     classified: ClassifiedQuery | None
@@ -49,7 +51,9 @@ def _standalone(state: AgentState) -> str:
 
 async def _node_classify(state: AgentState) -> dict[str, Any]:
     try:
-        classified = await rewrite_and_classify(state["query"], state.get("history"))
+        classified = await rewrite_and_classify(
+            state["query"], state.get("history"), state.get("summary")
+        )
         return {"classified": classified, "standalone_query": classified.rewritten}
     except Exception as e:
         return {"error": f"classify failed: {e}"}
@@ -158,6 +162,7 @@ async def _node_synthesize(state: AgentState) -> dict[str, Any]:
             sql_result=state.get("sql_result"),
             trace_id=state["trace_id"],
             history=state.get("history"),
+            summary=state.get("summary"),
         )
         return {"answer": answer}
     except Exception as e:
@@ -197,7 +202,12 @@ async def _node_append_memory(state: AgentState) -> dict[str, Any]:
     answer = state.get("answer")
     if state.get("session_id") and answer:
         try:
-            await append_turns(state["session_id"], state["query"], answer.answer)
+            await append_turns(
+                state["session_id"],
+                state["query"],
+                answer.answer,
+                summarize=summarize_conversation,
+            )
         except Exception:
             pass  # Memory write failure is non-fatal
     return {}
@@ -278,11 +288,14 @@ def _build_graph() -> Any:
 _graph = _build_graph()
 
 
-def _initial_state(query: str, session_id: str | None, history: list[dict]) -> AgentState:
+def _initial_state(
+    query: str, session_id: str | None, history: list[dict], summary: str
+) -> AgentState:
     return {
         "query": query,
         "session_id": session_id,
         "history": history,
+        "summary": summary,
         "standalone_query": "",
         "query_embedding": [],
         "classified": None,
@@ -300,11 +313,14 @@ async def ask(
     *,
     session_id: str | None = None,
     history: list[dict] | None = None,
+    summary: str | None = None,
 ) -> SynthesizedAnswer:
     """Public API: run the full agentic RAG pipeline for a query."""
-    if history is None:
-        history = await load_history(session_id)
-    state = _initial_state(query, session_id, history)
+    if history is None or summary is None:
+        mem = await load_memory(session_id)
+        history = mem.turns if history is None else history
+        summary = mem.summary if summary is None else summary
+    state = _initial_state(query, session_id, history, summary)
     final_state = await _graph.ainvoke(state)
     answer = final_state.get("answer")
     if answer is None:
@@ -324,15 +340,18 @@ async def ask_stream(
     *,
     session_id: str | None = None,
     history: list[dict] | None = None,
+    summary: str | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """Run the pipeline ONCE, streaming events as graph nodes complete.
 
     Event kinds: ("intent", str) · ("status", {"step": ...}) ·
     ("sources", list[RetrievedChunk]) · ("answer", SynthesizedAnswer).
     """
-    if history is None:
-        history = await load_history(session_id)
-    state = _initial_state(query, session_id, history)
+    if history is None or summary is None:
+        mem = await load_memory(session_id)
+        history = mem.turns if history is None else history
+        summary = mem.summary if summary is None else summary
+    state = _initial_state(query, session_id, history, summary)
 
     final_answer: SynthesizedAnswer | None = None
     cache_hit = False

@@ -73,6 +73,7 @@ async def synthesize(
     sql_result: SQLResult | None,
     trace_id: str = "",
     history: list[dict] | None = None,
+    summary: str | None = None,
 ) -> SynthesizedAnswer:
     t0 = time.perf_counter()
     s = get_settings()
@@ -112,13 +113,16 @@ async def synthesize(
     if not source_blocks:
         source_blocks.append("No sources available. Answer from general knowledge only.")
 
-    convo = ""
+    convo_parts = []
+    if summary:
+        convo_parts.append(f"Summary of earlier conversation:\n{summary}")
     if history:
         lines = [
             f"{t.get('role', 'user')}: {(t.get('content') or '')[:500]}"
             for t in history[-6:]
         ]
-        convo = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+        convo_parts.append("Recent turns:\n" + "\n".join(lines))
+    convo = "\n\n".join(convo_parts) + "\n\n" if convo_parts else ""
 
     user_content = (
         convo

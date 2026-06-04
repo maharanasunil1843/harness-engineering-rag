@@ -79,16 +79,21 @@ def _history_context(history: list[dict] | None) -> str:
 
 @traced("query_rewriter")
 async def rewrite_and_classify(
-    query: str, history: list[dict] | None = None
+    query: str,
+    history: list[dict] | None = None,
+    summary: str | None = None,
 ) -> ClassifiedQuery:
     s = get_settings()
     client = AsyncAnthropic(api_key=s.anthropic_api_key)
 
+    parts = []
+    if summary:
+        parts.append(f"Summary of earlier conversation:\n{summary}")
     convo = _history_context(history)
+    if convo:
+        parts.append(f"Recent turns:\n{convo}")
     user_content = (
-        f"Conversation so far:\n{convo}\n\nCurrent user message: {query}"
-        if convo
-        else query
+        "\n\n".join(parts) + f"\n\nCurrent user message: {query}" if parts else query
     )
 
     resp = await client.messages.create(

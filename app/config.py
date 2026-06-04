@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     cache_trust_threshold: float = 0.88
     cache_floor_threshold: float = 0.62
     cache_ttl: int = 3600
+    # Conversation memory: when the verbatim recent turns exceed this estimated
+    # token budget, the oldest are folded into a rolling Haiku summary. With
+    # ~200k windows the driver is cost/latency/focus, not overflow.
+    memory_token_budget: int = 1500
     rate_limit_rpm: int = 60
     rate_limit_window: int = 60
     admin_key: str | None = None  # gates /api/metrics; unset → endpoint returns 403

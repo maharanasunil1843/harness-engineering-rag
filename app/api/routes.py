@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from upstash_redis import Redis
 
+from app.agents.conversation_summary import summarize_conversation
 from app.agents.supervisor import ask, ask_stream
 from app.api.schemas import (
     HealthResponse,
@@ -25,7 +26,7 @@ from app.observability.metrics import get_metrics_snapshot, record_query
 from app.observability.tracing import is_tracing_healthy
 from app.retrieval.cache import cache_get_exact, cache_stats
 from app.retrieval.rate_limiter import check_rate_limit
-from app.retrieval.session_memory import append_turns, load_history
+from app.retrieval.session_memory import append_turns, load_memory
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -185,12 +186,13 @@ async def query_stream(request: Request, body: QueryRequest):
             yield {"event": "status", "data": json.dumps({"step": "searching"})}
             await asyncio.sleep(0)
 
-            # Load conversation memory once. The raw exact-match fast path is
-            # only safe on a first turn — a follow-up's raw text is context-
-            # dependent and must not be served by literal match.
-            history = await load_history(body.session_id)
+            # Load conversation memory once (recent turns + rolling summary). The
+            # raw exact-match fast path is only safe with NO prior context — a
+            # follow-up's raw text is context-dependent.
+            mem = await load_memory(body.session_id)
+            history, summary = mem.turns, mem.summary
 
-            if not history:
+            if not history and not summary:
                 cached = await cache_get_exact(body.query)
                 if cached is not None:
                     intent = "cache"
@@ -203,16 +205,22 @@ async def query_stream(request: Request, body: QueryRequest):
                         cached.answer, src_list, cached.confidence, str(uuid4()), True
                     ):
                         yield ev
-                    await append_turns(body.session_id, body.query, cached.answer)
+                    await append_turns(
+                        body.session_id, body.query, cached.answer,
+                        summarize=summarize_conversation,
+                    )
                     return
 
             # Otherwise run the pipeline exactly ONCE, streaming node-by-node.
-            # ask_stream resolves follow-ups against `history`, keys the cache on
-            # the standalone query, and persists the turn (append_memory node).
+            # ask_stream resolves follow-ups against history+summary, keys the
+            # cache on the standalone query, and persists the turn.
             final_answer = None
             async with asyncio.timeout(_STREAM_TIMEOUT_S):
                 async for kind, payload in ask_stream(
-                    body.query, session_id=body.session_id, history=history
+                    body.query,
+                    session_id=body.session_id,
+                    history=history,
+                    summary=summary,
                 ):
                     if kind == "intent":
                         intent = payload
