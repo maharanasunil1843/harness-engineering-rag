@@ -20,19 +20,17 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# 1) Dependency layer — cached on (pyproject.toml + uv.lock) ONLY via Docker's
-#    layer cache; source edits do not bust it. Bind mounts keep the manifests
-#    out of the image layers. (No type=cache mount: Railway's builder requires a
-#    proprietary cacheKey prefix on the id, and its build env is ephemeral so the
-#    uv download cache would not persist anyway.)
-RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    uv sync --frozen --no-default-groups --no-install-project
+# 1) Dependency layer — copy ONLY the manifests, then resolve. Docker's layer
+#    cache keys this on (pyproject.toml + uv.lock), so later source edits do not
+#    bust it. (No --mount flags: Railway's builder accepts only its proprietary
+#    type=cache mount and rejects bind mounts, so plain COPY keeps the Dockerfile
+#    portable across Railway, local Docker, and CI for an identical image.)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-default-groups --no-install-project
 
 # 2) Project layer — rebuilds only when source changes. --no-editable bakes the
 #    app/ingestion/evals packages into site-packages so the runtime stage needs
 #    nothing but the venv. (hatch wheel targets require all three to be present.)
-COPY pyproject.toml uv.lock ./
 COPY app ./app
 COPY ingestion ./ingestion
 COPY evals ./evals
