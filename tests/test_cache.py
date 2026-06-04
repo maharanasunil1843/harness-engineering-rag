@@ -73,38 +73,38 @@ class FakeRedis:
         self.sets: dict[str, set] = {}
         self.counters: dict[str, int] = {}
 
-    def get(self, k):
+    async def get(self, k):
         return self.kv.get(k)
 
-    def set(self, k, v, ex=None, **kw):
+    async def set(self, k, v, ex=None, **kw):
         self.kv[k] = v
 
-    def delete(self, *keys):
+    async def delete(self, *keys):
         for k in keys:
             self.kv.pop(k, None)
 
-    def mget(self, *keys):
+    async def mget(self, *keys):
         return [self.kv.get(k) for k in keys]
 
-    def sadd(self, key, *members):
+    async def sadd(self, key, *members):
         self.sets.setdefault(key, set()).update(members)
 
-    def srem(self, key, *members):
+    async def srem(self, key, *members):
         s = self.sets.get(key, set())
         for m in members:
             s.discard(m)
 
-    def smembers(self, key):
+    async def smembers(self, key):
         return list(self.sets.get(key, set()))
 
-    def scard(self, key):
+    async def scard(self, key):
         return len(self.sets.get(key, set()))
 
-    def incr(self, key):
+    async def incr(self, key):
         self.counters[key] = self.counters.get(key, 0) + 1
         return self.counters[key]
 
-    def expire(self, key, seconds, **kw):
+    async def expire(self, key, seconds, **kw):
         return True
 
 

@@ -15,28 +15,28 @@ class FakeRedis:
     def __init__(self):
         self.z: dict[str, dict[str, float]] = {}
 
-    def zremrangebyscore(self, key, min_, max_):
+    async def zremrangebyscore(self, key, min_, max_):
         members = self.z.setdefault(key, {})
         lo = float("-inf") if min_ == "-inf" else float(min_)
         hi = float("inf") if max_ == "+inf" else float(max_)
         for m in [k for k, s in members.items() if lo <= s <= hi]:
             members.pop(m, None)
 
-    def zcard(self, key):
+    async def zcard(self, key):
         return len(self.z.get(key, {}))
 
-    def zrange(self, key, start, stop, withscores=False):
+    async def zrange(self, key, start, stop, withscores=False):
         members = self.z.get(key, {})
         items = sorted(members.items(), key=lambda kv: kv[1])
         end = stop + 1 if stop >= 0 else None
         sliced = items[start:end] if end is not None else items[start:]
         return sliced if withscores else [m for m, _ in sliced]
 
-    def zadd(self, key, mapping):
+    async def zadd(self, key, mapping):
         members = self.z.setdefault(key, {})
         members.update(mapping)
 
-    def expire(self, key, seconds):
+    async def expire(self, key, seconds):
         return True
 
 

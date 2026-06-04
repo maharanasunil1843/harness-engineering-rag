@@ -28,7 +28,7 @@ from functools import lru_cache
 from uuid import uuid4
 
 from pydantic import BaseModel
-from upstash_redis import Redis
+from upstash_redis.asyncio import Redis
 
 from app.config import get_settings
 
@@ -78,12 +78,12 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _mget_all(r: Redis, keys: list[str]) -> dict[str, str | None]:
+async def _mget_all(r: Redis, keys: list[str]) -> dict[str, str | None]:
     """MGET keys in batches; return {key: raw_value_or_None} preserving misses."""
     out: dict[str, str | None] = {}
     for i in range(0, len(keys), _MGET_BATCH):
         batch = keys[i : i + _MGET_BATCH]
-        values = r.mget(*batch)
+        values = await r.mget(*batch)
         for k, v in zip(batch, values):
             out[k] = v
     return out
@@ -109,22 +109,22 @@ async def cache_get_exact(query: str) -> CacheResult | None:
     r = _redis()
     ttl = s.cache_ttl
     ekey = _exact_key(query)
-    mapped = r.get(ekey)
+    mapped = await r.get(ekey)
     if not mapped:
         return None
-    raw = r.get(mapped)
+    raw = await r.get(mapped)
     if raw:
         try:
             entry = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return None
-        r.expire(mapped, ttl)  # sliding TTL
-        r.expire(ekey, ttl)
-        r.incr(_HITS_KEY)
+        await r.expire(mapped, ttl)  # sliding TTL
+        await r.expire(ekey, ttl)
+        await r.incr(_HITS_KEY)
         return _result_from_entry(entry, 1.0)
     # Mapping outlived its entry — clean both up.
-    r.srem(_INDEX_KEY, mapped)
-    r.delete(ekey)
+    await r.srem(_INDEX_KEY, mapped)
+    await r.delete(ekey)
     return None
 
 
@@ -165,18 +165,18 @@ async def cache_get(
             return exact
 
     # 2) Semantic scan — single MGET, then cosine rank.
-    entry_keys = list(r.smembers(_INDEX_KEY))
+    entry_keys = list(await r.smembers(_INDEX_KEY))
     if not entry_keys:
         if count_miss:
-            r.incr(_MISSES_KEY)
+            await r.incr(_MISSES_KEY)
         return None
 
-    values = _mget_all(r, entry_keys)
+    values = await _mget_all(r, entry_keys)
 
     # Reap expired/dead index members so the scan stays bounded.
     orphans = [k for k, v in values.items() if v is None]
     if orphans:
-        r.srem(_INDEX_KEY, *orphans)
+        await r.srem(_INDEX_KEY, *orphans)
 
     best_entry: dict | None = None
     best_key: str | None = None
@@ -203,12 +203,12 @@ async def cache_get(
         if not accept and verify is not None:
             accept = await verify(query, best_entry["answer"])
         if accept:
-            r.expire(best_key, ttl)  # sliding TTL on the winner
-            r.incr(_HITS_KEY)
+            await r.expire(best_key, ttl)  # sliding TTL on the winner
+            await r.incr(_HITS_KEY)
             return _result_from_entry(best_entry, best_sim)
 
     if count_miss:
-        r.incr(_MISSES_KEY)
+        await r.incr(_MISSES_KEY)
     return None
 
 
@@ -244,19 +244,19 @@ async def cache_set(
         default=str,
     )
     # ex=ttl sets value + expiry in one round-trip (vs a separate EXPIRE).
-    r.set(entry_key, payload, ex=ttl)
-    r.sadd(_INDEX_KEY, entry_key)
+    await r.set(entry_key, payload, ex=ttl)
+    await r.sadd(_INDEX_KEY, entry_key)
     # Exact-match keys → entry, for the O(1) re-ask fast path. De-dup so the
     # canonical query and an identical alias aren't written twice.
     for q in {query, *(alias_queries or [])}:
-        r.set(_exact_key(q), entry_key, ex=ttl)
+        await r.set(_exact_key(q), entry_key, ex=ttl)
 
 
 async def cache_stats() -> dict:
     r = _redis()
-    entries = r.scard(_INDEX_KEY) or 0
-    hits = int(r.get(_HITS_KEY) or 0)
-    misses = int(r.get(_MISSES_KEY) or 0)
+    entries = await r.scard(_INDEX_KEY) or 0
+    hits = int(await r.get(_HITS_KEY) or 0)
+    misses = int(await r.get(_MISSES_KEY) or 0)
     total = hits + misses
     hit_rate = hits / total if total > 0 else 0.0
     return {"entries": entries, "hits": hits, "misses": misses, "hit_rate": hit_rate}

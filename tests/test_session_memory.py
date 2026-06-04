@@ -10,13 +10,13 @@ class FakeRedis:
     def __init__(self) -> None:
         self.kv: dict[str, str] = {}
 
-    def get(self, k):
+    async def get(self, k):
         return self.kv.get(k)
 
-    def set(self, k, v, ex=None, **kw):
+    async def set(self, k, v, ex=None, **kw):
         self.kv[k] = v
 
-    def expire(self, k, seconds, **kw):
+    async def expire(self, k, seconds, **kw):
         return True
 
 

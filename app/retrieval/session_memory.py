@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import NamedTuple
 
-from upstash_redis import Redis
+from upstash_redis.asyncio import Redis
 
 from app.config import get_settings
 
@@ -54,12 +54,12 @@ async def load_memory(session_id: str | None) -> Memory:
         return Memory("", [])
     r = _redis()
     tk, sk = _turns_key(session_id), _summary_key(session_id)
-    turns_raw = r.get(tk)
-    summary = r.get(sk) or ""
+    turns_raw = await r.get(tk)
+    summary = await r.get(sk) or ""
     if turns_raw:
-        r.expire(tk, _TTL)
+        await r.expire(tk, _TTL)
     if summary:
-        r.expire(sk, _TTL)
+        await r.expire(sk, _TTL)
     try:
         turns = json.loads(turns_raw) if turns_raw else []
         if not isinstance(turns, list):
@@ -103,10 +103,10 @@ async def append_turns(
         overflow = turns[:-_KEEP_RECENT]
         try:
             summary = await summarize(summary, overflow)
-            r.set(_summary_key(session_id), summary, ex=_TTL)
+            await r.set(_summary_key(session_id), summary, ex=_TTL)
             turns = turns[-_KEEP_RECENT:]
         except Exception:
             pass  # summarization failed — fall through to the hard cap
 
     turns = turns[-_HARD_CAP:]  # bound storage even if summarization didn't run
-    r.set(_turns_key(session_id), json.dumps(turns), ex=_TTL)
+    await r.set(_turns_key(session_id), json.dumps(turns), ex=_TTL)

@@ -2,7 +2,7 @@
 import time
 
 from pydantic import BaseModel
-from upstash_redis import Redis
+from upstash_redis.asyncio import Redis
 
 from app.config import get_settings
 
@@ -28,21 +28,21 @@ async def check_rate_limit(user_id: str = "default") -> RateLimitResult:
     limit = s.rate_limit_rpm
 
     # Remove members older than the window
-    r.zremrangebyscore(key, "-inf", window_start)
+    await r.zremrangebyscore(key, "-inf", window_start)
 
     # Count current members in window
-    count = r.zcard(key)
+    count = await r.zcard(key)
 
     if count >= limit:
         # Oldest member score = time of oldest request in window
-        oldest = r.zrange(key, 0, 0, withscores=True)
+        oldest = await r.zrange(key, 0, 0, withscores=True)
         reset_in = (oldest[0][1] + s.rate_limit_window - now) if oldest else float(s.rate_limit_window)
         return RateLimitResult(allowed=False, remaining=0, reset_in=max(0.0, reset_in))
 
     # Add current request
     member = str(now)
-    r.zadd(key, {member: now})
-    r.expire(key, s.rate_limit_window * 2)
+    await r.zadd(key, {member: now})
+    await r.expire(key, s.rate_limit_window * 2)
 
     remaining = max(0, limit - count - 1)
     return RateLimitResult(allowed=True, remaining=remaining, reset_in=0.0)
