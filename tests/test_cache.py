@@ -162,3 +162,70 @@ async def test_serializes_non_json_native_values(fake_cache):
     res = await cache.cache_get("count things", [0.5, 0.5])
     assert res is not None
     assert res.answer == "forty-two"
+
+
+# ── Banded acceptance (trust / gray-zone verify / floor) ─────────────────────
+# Stored embedding is [1, 0]; query vectors are chosen for exact cosines:
+#   [1, 0]        -> 1.00  (>= trust)
+#   [0.7, 0.714]  -> 0.70  (gray zone: floor <= sim < trust)
+#   [0.5, 0.866]  -> 0.50  (< floor)
+_TRUST = 0.88
+_FLOOR = 0.62
+
+
+async def test_band_trust_accepts_without_verify(fake_cache):
+    await cache.cache_set("q", [1.0, 0.0], "A", [], 0.7)
+    calls = []
+
+    async def verify(_q, _a):
+        calls.append(1)
+        return False
+
+    hit = await cache.cache_get(
+        "other", [1.0, 0.0], check_exact=False,
+        verify=verify, trust_threshold=_TRUST, floor_threshold=_FLOOR,
+    )
+    assert hit is not None and hit.answer == "A"
+    assert calls == []  # trust band must not invoke the verifier
+
+
+async def test_band_gray_zone_verify_true_hits(fake_cache):
+    await cache.cache_set("q", [1.0, 0.0], "A", [], 0.7)
+
+    async def verify(_q, _a):
+        return True
+
+    hit = await cache.cache_get(
+        "other", [0.7, 0.714], check_exact=False,
+        verify=verify, trust_threshold=_TRUST, floor_threshold=_FLOOR,
+    )
+    assert hit is not None and hit.answer == "A"
+
+
+async def test_band_gray_zone_verify_false_misses(fake_cache):
+    await cache.cache_set("q", [1.0, 0.0], "A", [], 0.7)
+
+    async def verify(_q, _a):
+        return False
+
+    hit = await cache.cache_get(
+        "other", [0.7, 0.714], check_exact=False,
+        verify=verify, trust_threshold=_TRUST, floor_threshold=_FLOOR,
+    )
+    assert hit is None
+
+
+async def test_band_below_floor_misses_without_verify(fake_cache):
+    await cache.cache_set("q", [1.0, 0.0], "A", [], 0.7)
+    calls = []
+
+    async def verify(_q, _a):
+        calls.append(1)
+        return True
+
+    hit = await cache.cache_get(
+        "other", [0.5, 0.866], check_exact=False,
+        verify=verify, trust_threshold=_TRUST, floor_threshold=_FLOOR,
+    )
+    assert hit is None
+    assert calls == []  # below floor must not invoke the verifier

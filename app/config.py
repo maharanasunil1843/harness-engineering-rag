@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     synthesizer_model: str = "claude-sonnet-4-6"
     embedding_model: str = "text-embedding-3-small"
     cache_similarity_threshold: float = 0.92
+    # Semantic-cache verification bands (measured on rephrasing vs distinct-
+    # question cosines): >= trust accepts outright; [floor, trust) asks a cheap
+    # Haiku verifier "does this answer address the question?"; < floor is a miss.
+    cache_trust_threshold: float = 0.88
+    cache_floor_threshold: float = 0.62
     cache_ttl: int = 3600
     rate_limit_rpm: int = 60
     rate_limit_window: int = 60

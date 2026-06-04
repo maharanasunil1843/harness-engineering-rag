@@ -9,7 +9,9 @@ from typing_extensions import TypedDict
 
 from app.agents.query_rewriter import ClassifiedQuery, rewrite_and_classify
 from app.agents.synthesizer import SynthesizedAnswer, synthesize
+from app.config import get_settings
 from app.retrieval.cache import cache_get, cache_set
+from app.retrieval.cache_verify import verify_cache_match
 from app.retrieval.hybrid import RetrievedChunk, hybrid_retrieve, _embed_query
 from app.retrieval.rate_limiter import check_rate_limit
 from app.sql.agent import SQLResult, text_to_sql
@@ -35,8 +37,17 @@ async def _node_embed(state: AgentState) -> dict[str, Any]:
 
 
 async def _node_cache_check(state: AgentState) -> dict[str, Any]:
+    # Banded semantic match on the raw query: trust high-similarity hits, verify
+    # gray-zone candidates with a cheap LLM check, miss below the floor.
+    s = get_settings()
     try:
-        hit = await cache_get(state["query"], state["query_embedding"])
+        hit = await cache_get(
+            state["query"],
+            state["query_embedding"],
+            verify=verify_cache_match,
+            trust_threshold=s.cache_trust_threshold,
+            floor_threshold=s.cache_floor_threshold,
+        )
         if hit:
             answer = SynthesizedAnswer(
                 answer=hit.answer,

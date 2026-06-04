@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import time
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from uuid import uuid4
 
@@ -133,13 +134,28 @@ async def cache_get(
     *,
     check_exact: bool = True,
     count_miss: bool = True,
+    verify: Callable[[str, str], Awaitable[bool]] | None = None,
+    trust_threshold: float | None = None,
+    floor_threshold: float | None = None,
 ) -> CacheResult | None:
     # count_miss=False lets a caller that will fall through to another cache
     # check (e.g. the stream handler -> ask()) avoid double-counting the miss.
+    #
+    # Banded acceptance: similarity >= trust is accepted outright; a candidate in
+    # [floor, trust) is accepted only if verify(query, answer) returns True (a
+    # cheap LLM check that the cached answer addresses the new question); below
+    # floor is a miss. Defaults collapse to the old single-threshold behavior
+    # (floor == trust == cache_similarity_threshold), so existing callers are
+    # unaffected.
     s = get_settings()
     r = _redis()
     ttl = s.cache_ttl
-    threshold = s.cache_similarity_threshold
+    trust = (
+        trust_threshold
+        if trust_threshold is not None
+        else s.cache_similarity_threshold
+    )
+    floor = floor_threshold if floor_threshold is not None else trust
 
     # 1) Exact-match fast path — O(1), no embedding scan. Callers that already
     #    ran cache_get_exact pass check_exact=False to skip the duplicate GET.
@@ -182,10 +198,14 @@ async def cache_get(
             best_entry = entry
             best_key = key
 
-    if best_entry is not None and best_key is not None and best_sim >= threshold:
-        r.expire(best_key, ttl)  # sliding TTL on the winner
-        r.incr(_HITS_KEY)
-        return _result_from_entry(best_entry, best_sim)
+    if best_entry is not None and best_key is not None and best_sim >= floor:
+        accept = best_sim >= trust
+        if not accept and verify is not None:
+            accept = await verify(query, best_entry["answer"])
+        if accept:
+            r.expire(best_key, ttl)  # sliding TTL on the winner
+            r.incr(_HITS_KEY)
+            return _result_from_entry(best_entry, best_sim)
 
     if count_miss:
         r.incr(_MISSES_KEY)
