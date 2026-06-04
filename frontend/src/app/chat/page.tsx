@@ -519,11 +519,29 @@ export default function ChatPage() {
     abortRef.current?.abort();
     abortRef.current = null;
     setIsStreaming(false);
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.isStreaming ? { ...m, isStreaming: false, status: undefined } : m
-      )
+
+    // Stop & edit: discard the half-streamed answer AND the user turn that
+    // prompted it, restoring that query into the input so it can be edited and
+    // resent. If nothing is streaming, just clear any lingering flags.
+    const streamingIdx = messages.findIndex((m) => m.isStreaming);
+    if (streamingIdx === -1) {
+      setMessages((prev) =>
+        prev.map((m) => ({ ...m, isStreaming: false, status: undefined }))
+      );
+      return;
+    }
+    const userIdx =
+      streamingIdx > 0 && messages[streamingIdx - 1].role === "user"
+        ? streamingIdx - 1
+        : -1;
+
+    const next = messages.filter(
+      (_, i) => i !== streamingIdx && i !== userIdx
     );
+    if (userIdx !== -1) setInput(messages[userIdx].content);
+    setMessages(next);
+    if (currentSessionId) persistMessages(currentSessionId, next);
+    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   return (
