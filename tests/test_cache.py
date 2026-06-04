@@ -1,8 +1,12 @@
 """Verify cache primitives and stats accounting."""
 import math
 import random
+from types import SimpleNamespace
 
-from app.retrieval.cache import _cosine
+import pytest
+
+from app.retrieval import cache
+from app.retrieval.cache import _cosine, _exact_key, _normalize
 
 
 def test_cosine_identical_vectors_is_one():
@@ -44,3 +48,117 @@ def test_cosine_high_similarity_for_near_duplicates():
     b = [x + rng.uniform(-0.01, 0.01) for x in a]
     sim = _cosine(a, b)
     assert sim > 0.99
+
+
+# ── Key normalization ────────────────────────────────────────────────────────
+
+def test_normalize_lowercases_and_collapses_whitespace():
+    assert _normalize("  What   IS a\tHarness?  ") == "what is a harness?"
+
+
+def test_exact_key_is_normalized_and_stable():
+    # Differently-cased/spaced phrasings of the same question collide on purpose.
+    assert _exact_key("What is a harness?") == _exact_key("  what  is a HARNESS? ")
+    assert _exact_key("a") != _exact_key("b")
+    assert _exact_key("x").startswith("cache:exact:")
+
+
+# ── cache_get / cache_set against an in-memory fake Redis ────────────────────
+
+class FakeRedis:
+    """Minimal in-memory stand-in for the Upstash REST client (test-only)."""
+
+    def __init__(self) -> None:
+        self.kv: dict[str, str] = {}
+        self.sets: dict[str, set] = {}
+        self.counters: dict[str, int] = {}
+
+    def get(self, k):
+        return self.kv.get(k)
+
+    def set(self, k, v, ex=None, **kw):
+        self.kv[k] = v
+
+    def delete(self, *keys):
+        for k in keys:
+            self.kv.pop(k, None)
+
+    def mget(self, *keys):
+        return [self.kv.get(k) for k in keys]
+
+    def sadd(self, key, *members):
+        self.sets.setdefault(key, set()).update(members)
+
+    def srem(self, key, *members):
+        s = self.sets.get(key, set())
+        for m in members:
+            s.discard(m)
+
+    def smembers(self, key):
+        return list(self.sets.get(key, set()))
+
+    def scard(self, key):
+        return len(self.sets.get(key, set()))
+
+    def incr(self, key):
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
+
+    def expire(self, key, seconds, **kw):
+        return True
+
+
+@pytest.fixture
+def fake_cache(monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr(cache, "_redis", lambda: fake)
+    monkeypatch.setattr(
+        cache,
+        "get_settings",
+        lambda: SimpleNamespace(
+            cache_ttl=3600,
+            cache_similarity_threshold=0.92,
+            upstash_redis_rest_url="x",
+            upstash_redis_rest_token="y",
+        ),
+    )
+    return fake
+
+
+async def test_exact_match_ignores_embedding(fake_cache):
+    await cache.cache_set("What is a harness?", [0.1] * 8, "ANS", [{"x": 1}], 0.8)
+    # Re-ask with different casing/spacing AND a useless embedding: the exact
+    # fast path must still hit (similarity 1.0) without the semantic scan.
+    res = await cache.cache_get("  what is a HARNESS? ", [0.0] * 8)
+    assert res is not None
+    assert res.similarity == 1.0
+    assert res.answer == "ANS"
+    assert res.confidence == 0.8
+
+
+async def test_semantic_hit_above_threshold_and_miss_below(fake_cache):
+    await cache.cache_set("alpha query", [1.0, 0.0, 0.0], "A", [], 0.7)
+    hit = await cache.cache_get("different phrasing", [0.99, 0.01, 0.0])
+    assert hit is not None and hit.answer == "A"
+    miss = await cache.cache_get("different phrasing", [0.0, 1.0, 0.0])
+    assert miss is None
+
+
+async def test_orphan_index_member_is_reaped(fake_cache):
+    # A dead entry key lingering in the index (entry expired, membership didn't).
+    fake_cache.sets[cache._INDEX_KEY] = {"cache:entry:dead"}
+    res = await cache.cache_get("anything", [0.1, 0.2, 0.3])
+    assert res is None
+    assert "cache:entry:dead" not in fake_cache.sets.get(cache._INDEX_KEY, set())
+
+
+async def test_serializes_non_json_native_values(fake_cache):
+    from decimal import Decimal
+
+    # SQL rows carry Decimal/etc — default=str must keep cache_set from raising
+    # (the old json.dumps silently dropped these writes).
+    sources = [{"rows": [{"count": Decimal("42")}]}]
+    await cache.cache_set("count things", [0.5, 0.5], "forty-two", sources, 0.9)
+    res = await cache.cache_get("count things", [0.5, 0.5])
+    assert res is not None
+    assert res.answer == "forty-two"
