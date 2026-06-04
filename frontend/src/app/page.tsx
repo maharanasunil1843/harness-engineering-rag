@@ -2,6 +2,11 @@
 
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
+import { Hero } from "@/components/Hero";
+import { StatsBand } from "@/components/landing/StatsBand";
+import { QueryPipeline } from "@/components/landing/QueryPipeline";
+import { SampleQueries } from "@/components/landing/SampleQueries";
+import { CorpusFooter } from "@/components/landing/CorpusFooter";
 
 const features = [
   {
@@ -26,29 +31,41 @@ const features = [
   },
 ];
 
-const stack = [
-  "LangGraph",
-  "Claude",
-  "pgvector",
-  "Supabase",
-  "FastAPI",
-  "Next.js",
+const pills = [
+  "LangGraph supervisor",
+  "Hybrid retrieval",
+  "Text-to-SQL",
+  "Semantic cache",
+  "Per-hop tracing",
 ];
+
+const stack = ["LangGraph", "Claude", "pgvector", "Supabase", "FastAPI", "Next.js"];
+
+const GITHUB_URL = "https://github.com/maharanasunil1843/harness-engineering-rag";
 
 export default function LandingPage() {
   const { isSignedIn } = useAuth();
 
   return (
-    <div className="min-h-screen bg-[#0A0A0F] text-zinc-100 flex flex-col">
-      <nav className="border-b border-[#1E1E2E] px-6 py-4 flex items-center justify-between">
-        <span className="text-sm font-medium text-zinc-400 tracking-wide uppercase">
+    <div className="min-h-screen bg-[#0A0A0F] text-zinc-100">
+      {/* Top nav — floats over the hero. */}
+      <nav className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-4">
+        <span className="text-sm font-medium uppercase tracking-wide text-zinc-400">
           Harness Engineering RAG
         </span>
         <div className="flex items-center gap-3">
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-zinc-400 transition-colors hover:text-zinc-100"
+          >
+            GitHub
+          </a>
           {isSignedIn ? (
             <Link
               href="/chat"
-              className="text-sm px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm transition-colors hover:bg-blue-500"
             >
               Go to Chat
             </Link>
@@ -56,13 +73,13 @@ export default function LandingPage() {
             <>
               <Link
                 href="/sign-in"
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
+                className="text-sm text-zinc-400 transition-colors hover:text-zinc-100"
               >
                 Sign in
               </Link>
               <Link
                 href="/sign-up"
-                className="text-sm px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
+                className="rounded bg-blue-600 px-3 py-1.5 text-sm transition-colors hover:bg-blue-500"
               >
                 Sign up
               </Link>
@@ -71,30 +88,50 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      <main className="flex-1 max-w-4xl mx-auto w-full px-6 py-20">
-        <div className="mb-16">
-          <div className="inline-flex items-center gap-2 text-xs text-zinc-500 border border-[#1E1E2E] rounded-full px-3 py-1 mb-8">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-            MVP — 420 chunks ingested
+      {/* ── Hero: 3D embedding field (lazy) behind centered copy ── */}
+      <section className="relative flex h-screen items-center justify-center overflow-hidden">
+        <div className="absolute inset-0">
+          <Hero />
+        </div>
+        {/* Vignette darkens the edges over the flow field. */}
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,_transparent_0%,_#0A0A0F_75%)]" />
+        {/* Soft scrim: a contrast pad directly behind the hero copy. */}
+        <div className="pointer-events-none absolute left-1/2 top-1/2 h-[440px] w-[720px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#0A0A0F]/70 blur-3xl" />
+
+        <div className="relative z-10 mx-auto max-w-3xl px-6 text-center">
+          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#1E1E2E] bg-[#0A0A0F]/60 px-3 py-1 text-xs text-zinc-500 backdrop-blur">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+            MVP — 420 chunks ingested · move your cursor
           </div>
 
-          <h1 className="text-4xl font-semibold tracking-tight text-zinc-100 mb-4">
+          <h1 className="bg-gradient-to-b from-white to-zinc-500 bg-clip-text text-5xl font-semibold tracking-tight text-transparent drop-shadow-[0_2px_24px_rgba(0,0,0,0.55)] sm:text-6xl">
             Harness Engineering RAG
           </h1>
-          <p className="text-lg text-zinc-400 max-w-2xl leading-relaxed mb-10">
-            Agentic retrieval-augmented generation over the harness engineering
-            corpus. Hybrid retrieval, text-to-SQL, semantic caching, per-hop
-            tracing.
+
+          <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-zinc-300 [text-shadow:_0_1px_12px_rgba(0,0,0,0.7)] sm:text-lg">
+            An agentic supervisor routes every question through hybrid retrieval,
+            text-to-SQL, and a semantic cache — then streams a cited answer.
           </p>
 
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
+            {pills.map((p) => (
+              <span
+                key={p}
+                className="rounded-full border border-[#1E1E2E] bg-[#12121A]/70 px-3 py-1 text-xs text-zinc-400 backdrop-blur"
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
             <Link
               href={isSignedIn ? "/chat" : "/sign-in"}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-blue-600 hover:bg-blue-500 text-sm font-medium transition-colors"
+              className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium transition-colors hover:bg-blue-500"
             >
-              {isSignedIn ? "Go to Chat" : "Start Querying"}
+              {isSignedIn ? "Go to Chat" : "Try it live"}
               <svg
-                className="w-4 h-4"
+                className="h-4 w-4"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -108,12 +145,12 @@ export default function LandingPage() {
               </svg>
             </Link>
             <a
-              href="https://github.com/sunil1843/harness-engineering-rag"
+              href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md border border-[#1E1E2E] hover:border-zinc-600 text-sm font-medium text-zinc-400 hover:text-zinc-100 transition-colors"
+              className="inline-flex items-center gap-2 rounded-md border border-[#1E1E2E] bg-[#0A0A0F]/40 px-5 py-2.5 text-sm font-medium text-zinc-400 backdrop-blur transition-colors hover:border-zinc-600 hover:text-zinc-100"
             >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                 <path
                   fillRule="evenodd"
                   clipRule="evenodd"
@@ -123,43 +160,60 @@ export default function LandingPage() {
               View on GitHub
             </a>
           </div>
-        </div>
 
-        <div className="mb-16">
-          <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-6">
-            Capabilities
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {features.map((f) => (
-              <div
-                key={f.title}
-                className="p-5 rounded-lg border border-[#1E1E2E] bg-[#12121A] hover:border-zinc-700 transition-colors"
-              >
-                <h3 className="text-sm font-medium text-zinc-100 mb-2">
-                  {f.title}
-                </h3>
-                <p className="text-sm text-zinc-500 leading-relaxed">
-                  {f.description}
-                </p>
-              </div>
-            ))}
+          <div className="mt-14 flex justify-center">
+            <span className="animate-bounce text-zinc-600" aria-hidden="true">
+              ↓
+            </span>
           </div>
         </div>
+      </section>
 
-        <div className="border-t border-[#1E1E2E] pt-8">
-          <p className="text-xs text-zinc-600 mb-3">Stack</p>
+      {/* ── Verified metrics ── */}
+      <StatsBand />
+
+      {/* ── Animated query pipeline ── */}
+      <QueryPipeline />
+
+      {/* ── Capabilities ── */}
+      <section className="mx-auto w-full max-w-4xl px-6 py-20">
+        <h2 className="mb-6 text-xs font-medium uppercase tracking-wider text-zinc-500">
+          Capabilities
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {features.map((f) => (
+            <div
+              key={f.title}
+              className="rounded-lg border border-[#1E1E2E] bg-[#12121A] p-5 transition-colors hover:border-zinc-700"
+            >
+              <h3 className="mb-2 text-sm font-medium text-zinc-100">{f.title}</h3>
+              <p className="text-sm leading-relaxed text-zinc-500">
+                {f.description}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-12 border-t border-[#1E1E2E] pt-8">
+          <p className="mb-3 text-xs text-zinc-600">Stack</p>
           <div className="flex flex-wrap gap-2">
             {stack.map((item) => (
               <span
                 key={item}
-                className="text-xs text-zinc-400 px-2.5 py-1 rounded border border-[#1E1E2E] bg-[#12121A]"
+                className="rounded border border-[#1E1E2E] bg-[#12121A] px-2.5 py-1 text-xs text-zinc-400"
               >
                 {item}
               </span>
             ))}
           </div>
         </div>
-      </main>
+      </section>
+
+      {/* ── Sample queries ── */}
+      <SampleQueries />
+
+      {/* ── Corpus + footer ── */}
+      <CorpusFooter />
     </div>
   );
 }
