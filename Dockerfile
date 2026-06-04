@@ -23,7 +23,7 @@ WORKDIR /app
 # 1) Dependency layer — cached on (pyproject.toml + uv.lock) ONLY. Bind mounts
 #    keep the manifests out of the image layers; the cache mount preserves uv's
 #    wheel/download cache across builds. Source edits do not bust this layer.
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-default-groups --no-install-project
@@ -35,7 +35,7 @@ COPY pyproject.toml uv.lock ./
 COPY app ./app
 COPY ingestion ./ingestion
 COPY evals ./evals
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv sync --frozen --no-default-groups --no-editable
 
 ############################
