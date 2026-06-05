@@ -10,9 +10,14 @@ import { CorpusFooter } from "@/components/landing/CorpusFooter";
 
 const features = [
   {
+    title: "Conversational Memory",
+    description:
+      "Server-side multi-turn memory with a rolling summary. Follow-ups like “what about its failure modes?” are resolved into standalone queries before retrieval.",
+  },
+  {
     title: "Hybrid Retrieval",
     description:
-      "Dense + BM25 + metadata filter with Reciprocal Rank Fusion. Combines semantic similarity with keyword precision for maximum recall.",
+      "Dense + sparse with Reciprocal Rank Fusion and parent-chunk expansion. Combines semantic similarity with keyword precision for maximum recall.",
   },
   {
     title: "Text-to-SQL",
@@ -20,23 +25,29 @@ const features = [
       "Natural language to SQL over the harness catalog with self-correction. Queries structured tables directly when semantic search is insufficient.",
   },
   {
-    title: "Semantic Cache",
+    title: "Verified Semantic Cache",
     description:
-      "Embedding-similarity caching via Upstash Redis. Repeat queries return in sub-second latency without hitting the LLM.",
+      "Exact + semantic lookup on Redis before any LLM call. Gray-zone matches pass a cheap LLM check, so vague rephrasings hit without serving a wrong answer.",
+  },
+  {
+    title: "Real-time Streaming",
+    description:
+      "Answers stream token-by-token from the model over SSE, on a fully async event loop. No simulated typing — genuine live synthesis.",
   },
   {
     title: "Per-hop Tracing",
     description:
-      "LangSmith integration with trace IDs surfaced per message. Full observability into every retrieval and synthesis step.",
+      "LangSmith integration with trace IDs surfaced per message. Observability into every retrieval and synthesis step.",
   },
 ];
 
 const pills = [
   "LangGraph supervisor",
+  "Conversational memory",
   "Hybrid retrieval",
   "Text-to-SQL",
-  "Semantic cache",
-  "Per-hop tracing",
+  "Verified cache",
+  "Token streaming",
 ];
 
 const stack = ["LangGraph", "Claude", "pgvector", "Supabase", "FastAPI", "Next.js"];
@@ -109,8 +120,9 @@ export default function LandingPage() {
           </h1>
 
           <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-zinc-300 [text-shadow:_0_1px_12px_rgba(0,0,0,0.7)] sm:text-lg">
-            An agentic supervisor routes every question through hybrid retrieval,
-            text-to-SQL, and a semantic cache — then streams a cited answer.
+            A multi-turn agentic supervisor resolves follow-ups, then routes
+            through hybrid retrieval, text-to-SQL, and a verified cache — and
+            streams a cited answer token by token.
           </p>
 
           <div className="mt-7 flex flex-wrap items-center justify-center gap-2">

@@ -11,11 +11,11 @@ import { Reveal } from "./Reveal";
  */
 const STAGES = [
   { label: "Query", sub: "user question", color: "#3B82F6" },
-  { label: "Rewrite", sub: "intent classify", color: "#3B82F6" },
-  { label: "Cache", sub: "semantic lookup", color: "#22C55E" },
+  { label: "Rewrite", sub: "follow-up + intent", color: "#3B82F6" },
+  { label: "Cache", sub: "exact + verify", color: "#22C55E" },
   { label: "Retrieve", sub: "pgvector + SQL", color: "#14B8A6" },
   { label: "Synthesize", sub: "cited · Sonnet", color: "#EA580C" },
-  { label: "Stream", sub: "SSE tokens", color: "#3B82F6" },
+  { label: "Stream", sub: "live tokens", color: "#3B82F6" },
 ];
 
 const EVENTS = ["status", "source", "token", "done"];
@@ -28,9 +28,9 @@ export function QueryPipeline() {
           How a query flows
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400">
-          Every question is rewritten, checked against the semantic cache, routed
-          to hybrid retrieval and text-to-SQL, then synthesized into a cited
-          answer — streamed token by token over SSE.
+          Each turn resolves follow-ups against conversation memory, checks the
+          verified cache, routes to hybrid retrieval and text-to-SQL, then
+          synthesizes a cited answer — streamed token by token over SSE.
         </p>
       </Reveal>
 

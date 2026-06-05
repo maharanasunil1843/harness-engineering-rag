@@ -4,7 +4,7 @@
 
 ### Agentic retrieval-augmented generation over the harness-engineering corpus
 
-Hybrid retrieval · text-to-SQL · semantic caching · per-hop tracing — a production-grade agentic architecture at MVP scale.
+Conversational multi-turn RAG · hybrid retrieval · text-to-SQL · verified semantic cache · real token streaming — a production-grade agentic architecture at MVP scale.
 
 <br/>
 
@@ -33,7 +33,7 @@ Hybrid retrieval · text-to-SQL · semantic caching · per-hop tracing — a pro
 
 ![Harness Engineering RAG](docs/assets/banner.svg)
 
-<sub>For an even stronger first impression, record a 10–15 s clip of the live app (sign in → ask → streaming cited answer → repeat for a cache hit), save it as <code>docs/assets/demo.gif</code>, and swap the image above to <code>docs/assets/demo.gif</code>. Tools: <a href="https://getkap.co/">Kap</a>, <a href="https://www.cockos.com/licecap/">LICEcap</a>, or <code>peek</code>.</sub>
+<sub>For an even stronger first impression, record a 10–15 s clip of the live app (sign in → ask → streaming cited answer → a follow-up → repeat for a cache hit), save it as <code>docs/assets/demo.gif</code>, and swap the image above to <code>docs/assets/demo.gif</code>. Tools: <a href="https://getkap.co/">Kap</a>, <a href="https://www.cockos.com/licecap/">LICEcap</a>, or <code>peek</code>.</sub>
 
 </div>
 
@@ -41,7 +41,7 @@ Hybrid retrieval · text-to-SQL · semantic caching · per-hop tracing — a pro
 
 ## What this is
 
-A natural-language interface over a curated corpus of harness-engineering literature (Trivedy, Osmani, Anthropic Labs, HumanLayer, Red Hat) plus a practitioner case study mapping those principles to a production enterprise RAG system. Queries flow through a **LangGraph supervisor** that routes to specialized workers — hybrid retrieval over pgvector, text-to-SQL over a structured catalog, or both in parallel — then synthesizes **cited answers with confidence scoring**, streamed token-by-token over SSE.
+A natural-language, **multi-turn** interface over a curated corpus of harness-engineering literature (Trivedy, Osmani, Anthropic Labs, HumanLayer, Red Hat) plus a practitioner case study mapping those principles to a production enterprise RAG system. Each question flows through a **LangGraph supervisor** that resolves follow-ups against conversation memory, routes to specialized workers — hybrid retrieval over pgvector, text-to-SQL over a structured catalog, or both — and synthesizes a **cited answer streamed token-by-token** over SSE. A verified semantic cache short-circuits repeat and rephrased questions before any LLM call.
 
 Built as a portfolio MVP demonstrating the full production architecture at reduced scale. Every architectural decision is documented in [`docs/adr/`](docs/adr/).
 
@@ -55,8 +55,9 @@ Built as a portfolio MVP demonstrating the full production architecture at reduc
 | **Chunks in pgvector** | 420 |
 | **Structured catalog** | 108 components · 43 failure modes · 14 harnesses · 7 practitioners · 9 benchmarks |
 | **Retrieval** | Hybrid dense + sparse with reciprocal rank fusion, parent-chunk expansion |
-| **Cache** | Semantic similarity (cosine ≥ 0.92) — **sub-1.2 s on hit** vs ~28 s cold |
-| **Routing** | 7/7 correct on integration test (retrieval · SQL · hybrid · direct · cross-doc · DOCX · cache) |
+| **Cache** | Exact + semantic with LLM verification — **~0.2–0.5 s** identical re-ask · **~2 s** vague rephrase · vs **~24 s** fresh |
+| **Conversation** | Server-side multi-turn memory + rolling summary; follow-ups resolved to standalone queries |
+| **Streaming** | Real token-by-token synthesis (Anthropic streaming) over SSE; fully async event loop |
 | **Cost / query** | ~₹1.5 blended (Haiku workers + Sonnet synthesis + prompt caching) |
 | **Backend image** | 314 MB distroless, runtime deps only |
 
@@ -66,42 +67,42 @@ Built as a portfolio MVP demonstrating the full production architecture at reduc
 
 ```mermaid
 flowchart TB
-    subgraph client [" "]
+    U([User]) --> FE["Next.js 16 + Clerk<br/>· Vercel ·"]
+    FE -->|"SSE · /api/query/stream<br/>(+ session_id)"| API["FastAPI · Railway<br/>fully async · distroless"]
+
+    subgraph orch ["LangGraph Supervisor — single run, streamed"]
         direction TB
-        U([User]) --> FE["Next.js 16 + Clerk<br/>· Vercel ·"]
+        MEM["Load session memory<br/>recent turns + summary"]
+        QR["Rewrite + classify<br/>resolve follow-up → standalone<br/>· Sonnet 4.6 ·"]
+        CACHE{"Cache check (standalone)<br/>exact → semantic → verify"}
+        ROUTE{"Route by intent"}
+        HR["Hybrid retrieval<br/>pgvector + tsvector · RRF"]
+        SQL["Text-to-SQL<br/>self-correcting · Haiku"]
+        SYN["Synthesize (stream)<br/>· Sonnet 4.6 · cited"]
+        STORE["Cache store<br/>context-free only"]
+        APP["Append turn<br/>(+ roll summary)"]
     end
 
-    FE -->|"SSE · /api/query/stream"| API["FastAPI<br/>· Railway · distroless ·"]
-
-    subgraph orch ["LangGraph Supervisor"]
-        direction TB
-        RL["Rate Limiter<br/>sliding window"]
-        QR["Query Rewriter +<br/>Intent Classifier<br/>· Sonnet 4.6 ·"]
-        CACHE{"Semantic<br/>cache hit?"}
-        ROUTE{"Route by<br/>intent"}
-        HR["Hybrid Retrieval<br/>pgvector + tsvector<br/>RRF fusion"]
-        SQL["Text-to-SQL Agent<br/>self-correcting · Haiku"]
-        SYN["Synthesizer<br/>· Sonnet 4.6 ·<br/>cited + confidence"]
-    end
-
-    API --> RL --> QR --> CACHE
-    CACHE -->|hit| SYN
+    API --> MEM --> QR --> CACHE
+    CACHE -->|hit| APP
     CACHE -->|miss| ROUTE
     ROUTE --> HR --> SYN
     ROUTE --> SQL --> SYN
-    SYN --> STORE["Cache Set"] --> API
+    SYN -->|"live tokens"| API
+    SYN --> STORE --> APP --> API
 
     subgraph data ["Polyglot Data Layer"]
         direction LR
-        PG[("Supabase Postgres<br/>pgvector + tsvector")]
-        RD[("Upstash Redis<br/>cache + limits")]
+        PG[("Supabase Postgres<br/>pgvector + tsvector + catalog")]
+        RD[("Upstash Redis<br/>cache · memory · limits")]
     end
 
     HR -.-> PG
     SQL -.-> PG
     CACHE -.-> RD
-    RL -.-> RD
+    MEM -.-> RD
     STORE -.-> RD
+    APP -.-> RD
     API -. per-hop traces .-> LS["LangSmith"]
 
     classDef edge fill:#1e293b,stroke:#475569,color:#e2e8f0
@@ -109,7 +110,7 @@ flowchart TB
     classDef llm fill:#7c2d12,stroke:#ea580c,color:#fff7ed
     class FE,API edge
     class PG,RD,LS store
-    class QR,SQL,SYN llm
+    class QR,SYN llm
 ```
 
 ### Query lifecycle (streaming)
@@ -123,29 +124,54 @@ sequenceDiagram
     participant DB as Supabase pgvector
     participant R as Upstash Redis
 
-    User->>FE: Ask a question
+    User->>FE: Ask (with session_id)
     FE->>API: POST /api/query/stream (SSE)
-    API->>R: rate-limit check
-    API->>SUP: rewrite + classify intent
-    SUP->>R: semantic cache lookup
+    API->>R: load memory (turns + summary) · rate-limit
+    API->>SUP: run pipeline once (streamed)
+    SUP->>SUP: rewrite + classify → standalone query
+    SUP->>R: cache check (exact → semantic → verify)
 
     alt cache hit
         R-->>SUP: cached answer
-        API-->>FE: status → source → token → done
-    else cache miss
-        SUP->>DB: hybrid retrieval (dense + sparse, RRF)
+        API-->>FE: status → source → token(s) → done
+    else miss
+        SUP->>DB: hybrid retrieval (dense + sparse · RRF)
         DB-->>SUP: ranked chunks (+ parent expansion)
-        SUP-->>API: synthesize (Sonnet · cited)
         API-->>FE: event: source (relevance bars)
-        API-->>FE: event: token  (streamed answer)
-        SUP->>R: cache set
-        API-->>FE: event: done (latency · confidence · cache_hit)
+        SUP-->>API: synthesize (Sonnet, streaming)
+        API-->>FE: event: token … (live, token-by-token)
+        SUP->>R: cache store (context-free only)
     end
-
+    SUP->>R: append turn (+ roll summary if over budget)
+    API-->>FE: event: done (latency · confidence · cache_hit)
     FE-->>User: rendered markdown + sources
 ```
 
 The SSE wire protocol emits five event kinds — `status`, `source`, `token`, `done`, `error` — consumed by the frontend parser in [`frontend/src/lib/api.ts`](frontend/src/lib/api.ts).
+
+---
+
+## 🧠 Conversational memory
+
+Multi-turn chat backed by **server-side memory in Upstash Redis** (keyed by `session_id`, sliding TTL):
+
+- **Context-aware follow-ups** — the rewriter resolves pronouns/ellipsis (*"what about **its** failure modes?"*) against recent turns into a fully **standalone** query before retrieval, so follow-ups actually retrieve the right thing.
+- **Rolling summary + token budget** — recent turns are kept verbatim; once they exceed the budget the oldest fold into a running **Haiku summary**, so long sessions keep context without resending the whole transcript. (With ~200k windows the driver is cost/latency/focus, not overflow.)
+- **Cache stays clean** — only **context-free** answers (first/self-contained turns) are written to the global cache, so a follow-up's conversation-shaped answer never leaks into unrelated chats. Lookups still run on every turn.
+
+Implemented in [`app/retrieval/session_memory.py`](app/retrieval/session_memory.py) + [`app/agents/conversation_summary.py`](app/agents/conversation_summary.py).
+
+---
+
+## ⚡ Semantic cache
+
+A tiered lookup on Upstash Redis, consulted **before any LLM call** ([`app/retrieval/cache.py`](app/retrieval/cache.py)):
+
+1. **Exact match** — `sha256` of the normalized query → O(1), no embedding. Instant identical re-asks.
+2. **Semantic + verification** — one batched `MGET` scan + cosine. A hit **≥ 0.88** is trusted; in the **0.62–0.88 gray band** a cheap **Haiku check** (*"does this answer address the question?"*, [`cache_verify.py`](app/retrieval/cache_verify.py)) decides — so vague rephrasings hit **without** ever serving a wrong answer.
+3. **Miss** — run the pipeline once, stream the answer, then store it (context-free only).
+
+Sliding TTL refresh on hits and orphan-key reaping keep the scan bounded. Measured: identical re-ask **~0.2–0.5 s**, vague rephrase **~2 s** (verifier), fresh query **~24 s**.
 
 ---
 
@@ -179,15 +205,16 @@ Every catalog row carries `source_doc_id` provenance. Parser selection: Docling 
 
 | Layer | Technology |
 |---|---|
-| Orchestration | LangGraph (StateGraph with conditional routing) |
-| Models | Claude **Sonnet 4.6** (planner + synthesizer), **Haiku 4.5** (workers) |
-| Embeddings | OpenAI `text-embedding-3-small` (1536-dim) |
+| Orchestration | LangGraph (StateGraph, classify-first conditional routing, single streamed run) |
+| Models | Claude **Sonnet 4.6** (planner + synthesizer), **Haiku 4.5** (workers · cache verifier · summarizer) |
+| Embeddings | OpenAI `text-embedding-3-small` (1536-dim, async) |
 | Vector store | Supabase Postgres + pgvector (HNSW index) |
 | Sparse retrieval | Postgres `tsvector` + `ts_rank_cd` |
 | Structured data | 6 catalog tables for the text-to-SQL agent |
-| Cache | Upstash Redis (semantic similarity + sliding-window rate limiter) |
-| Backend | FastAPI (async, SSE streaming; Mangum for the Lambda path) |
-| Frontend | Next.js 16, Tailwind v4, Clerk auth |
+| Cache | Upstash Redis — exact + semantic (LLM-verified) cache, sliding TTL |
+| Conversation memory | Upstash Redis — per-session turns + rolling summary |
+| Backend | FastAPI — **fully async** (AsyncAnthropic / AsyncOpenAI / async Redis · DB via `to_thread`), **real token streaming** over SSE; Mangum for the Lambda path |
+| Frontend | Next.js 16, Tailwind v4, Clerk auth, WebGL aurora hero (three.js) |
 | Observability | LangSmith per-hop tracing, token tracking |
 | Container | Multi-stage distroless image (314 MB, runtime deps only) |
 | CI | GitHub Actions with RAGAS eval gates |
@@ -214,12 +241,12 @@ Every catalog row carries `source_doc_id` provenance. Parser selection: Docling 
 
 | Query | Path | What it demonstrates |
 |---|---|---|
-| "What is a harness?" | Retrieval | Core definition with source citations |
+| "What is a harness?" | Retrieval | Core definition with source citations, streamed live |
 | "List all components in the safety category" | SQL | Text-to-SQL over the catalog |
 | "What failure modes do hooks address?" | Hybrid | Retrieval + SQL fused |
-| "How does Red Hat's workflow relate to Anthropic's planner/evaluator?" | Cross-doc | Synthesis across articles |
-| "How are harness principles applied in manufacturing?" | DOCX | Surfaces the practitioner case study |
-| _Repeat any query_ | Cache hit | Sub-1.2 s semantic cache + hit indicator |
+| _…then_ "What are **its** main components?" | Follow-up | Conversational memory resolves "its" → the harness |
+| "Can you explain what a harness is for AI agents?" | Cache (verified) | Vague rephrase hits the cache via the LLM verifier |
+| _Repeat any query_ | Cache hit | Sub-second exact-match re-ask + hit indicator |
 
 ---
 
@@ -250,7 +277,7 @@ npm install && npm run dev
 
 Frontend on **Vercel**, backend on **Railway** (long-lived container), data layer unchanged (Supabase + Upstash). Both platforms auto-deploy on push to `main` via their native Git integrations — there is no GitHub Actions deploy job.
 
-> Why Railway over the documented Lambda path? API Gateway buffers responses and **cannot stream SSE**, which the chat depends on. See [`docs/adr/004-railway-over-lambda.md`](docs/adr/004-railway-over-lambda.md).
+> Why Railway over the documented Lambda path? API Gateway buffers responses and **cannot stream SSE**, which the live token streaming depends on. See [`docs/adr/004-railway-over-lambda.md`](docs/adr/004-railway-over-lambda.md).
 
 **Deploy order matters** — stand up the backend first so its URL is available for the frontend's `NEXT_PUBLIC_API_URL`.
 
@@ -268,6 +295,8 @@ New Project → *Deploy from GitHub repo*. Railway builds the root [`Dockerfile`
 | `ADMIN_KEY` | optional; gates `/api/metrics` |
 
 > Railway injects `PORT`; the distroless entrypoint [`serve.py`](serve.py) reads it. Set the public networking port to match (`8080`). The image carries **no shell**, so the start command is the Dockerfile `CMD` — do not add a `startCommand` to `railway.json`.
+>
+> Railway idles the container when quiet, so the **first request after a pause is a ~30 s cold start** — warm it (one query) before a live demo.
 
 ### 2. Frontend → Vercel
 
@@ -298,21 +327,21 @@ CI blocks merge if **RAGAS faithfulness drops below 0.85**. See [`.github/workfl
 
 ```
 ├── app/
-│   ├── agents/         # LangGraph supervisor, query rewriter, synthesizer
-│   ├── retrieval/      # Hybrid retrieval, semantic cache, rate limiter
-│   ├── sql/            # Text-to-SQL agent with self-correction
+│   ├── agents/         # supervisor (LangGraph), query rewriter, synthesizer, summarizer
+│   ├── retrieval/      # hybrid retrieval, semantic cache + verifier, session memory, rate limiter
+│   ├── sql/            # text-to-SQL agent with self-correction
 │   ├── observability/  # LangSmith tracing, token tracking
 │   └── api/            # FastAPI routes, SSE streaming, Lambda handler
-├── ingestion/          # Parser dispatcher, chunker, embedder, entity extractor
+├── ingestion/          # parser dispatcher, chunker, embedder, entity extractor
 ├── evals/              # RAGAS golden set and evaluation harness
-├── frontend/           # Next.js 16 + Clerk + Tailwind v4 (+ /showcase hero)
+├── frontend/           # Next.js 16 + Clerk + Tailwind v4 (WebGL aurora landing hero)
 ├── infra/terraform/    # AWS Lambda + API Gateway IaC
-├── scripts/            # Smoke test, integration tests, DB utilities
-├── docs/adr/           # Architecture decision records
-├── Dockerfile          # Multi-stage distroless backend image (Railway)
-├── serve.py            # Shell-free container entrypoint ($PORT → uvicorn)
+├── scripts/            # smoke test, integration tests, DB utilities
+├── docs/adr/           # architecture decision records
+├── Dockerfile          # multi-stage distroless backend image (Railway)
+├── serve.py            # shell-free container entrypoint ($PORT → uvicorn)
 ├── railway.json        # Railway build/deploy config
-├── CLAUDE.md           # Agent harness configuration for this repo
+├── CLAUDE.md           # agent harness configuration for this repo
 └── Makefile
 ```
 
@@ -346,4 +375,3 @@ The Lambda handler (Mangum) and Terraform modules are included — migration is 
 ## License
 
 MIT
-</content>

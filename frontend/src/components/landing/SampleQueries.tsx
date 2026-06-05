@@ -10,7 +10,7 @@ const PATH_COLORS: Record<string, string> = {
   Retrieval: "text-blue-300 border-blue-500/30 bg-blue-500/10",
   SQL: "text-teal-300 border-teal-500/30 bg-teal-500/10",
   Hybrid: "text-purple-300 border-purple-500/30 bg-purple-500/10",
-  "Cross-doc": "text-orange-300 border-orange-500/30 bg-orange-500/10",
+  "Follow-up": "text-indigo-300 border-indigo-500/30 bg-indigo-500/10",
   DOCX: "text-zinc-300 border-zinc-500/30 bg-zinc-500/10",
   Cache: "text-green-300 border-green-500/30 bg-green-500/10",
 };
@@ -19,9 +19,9 @@ const QUERIES: { q: string; path: keyof typeof PATH_COLORS; note: string }[] = [
   { q: "What is a harness?", path: "Retrieval", note: "Core definition with source citations" },
   { q: "List all components in the safety category", path: "SQL", note: "Text-to-SQL over the catalog" },
   { q: "What failure modes do hooks address?", path: "Hybrid", note: "Retrieval + SQL fused" },
-  { q: "How does Red Hat's workflow relate to Anthropic's planner/evaluator?", path: "Cross-doc", note: "Synthesis across articles" },
+  { q: "…then: What are its main components?", path: "Follow-up", note: "Conversation memory resolves “its”" },
+  { q: "Can you explain what a harness is for AI agents?", path: "Cache", note: "Vague rephrase hits via the verifier" },
   { q: "How are harness principles applied in manufacturing?", path: "DOCX", note: "Surfaces the practitioner case study" },
-  { q: "Repeat any question", path: "Cache", note: "Sub-1.2s semantic cache hit" },
 ];
 
 export function SampleQueries() {
