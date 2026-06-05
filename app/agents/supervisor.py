@@ -188,11 +188,15 @@ async def _node_synthesize(state: AgentState) -> dict[str, Any]:
 
 async def _node_cache_store(state: AgentState) -> dict[str, Any]:
     answer = state.get("answer")
-    if answer and not state.get("cache_hit"):
-        # Key on the standalone query. Alias the raw query ONLY on a first turn
-        # (no history) — a follow-up's raw text is context-dependent and must
-        # not become an exact-match key.
-        aliases = [] if state.get("history") else [state["query"]]
+    # Only cache CONTEXT-FREE answers — ones synthesized with no conversation
+    # history/summary. A follow-up's answer is shaped by its conversation
+    # ("Building on what we discussed..."), so writing it to the GLOBAL cache
+    # would leak that framing into unrelated chats. Lookups still run on every
+    # turn, so a rephrased follow-up can still HIT a clean cached answer.
+    contextual = bool(state.get("history") or state.get("summary"))
+    if answer and not state.get("cache_hit") and not contextual:
+        # Key on the standalone query + embedding so rephrasings match
+        # semantically; alias the raw query for instant identical re-asks.
         try:
             await cache_set(
                 _standalone(state),
@@ -200,7 +204,7 @@ async def _node_cache_store(state: AgentState) -> dict[str, Any]:
                 answer.answer,
                 answer.sources,
                 answer.confidence,
-                alias_queries=aliases,
+                alias_queries=[state["query"]],
             )
         except Exception:
             pass  # Cache write failure is non-fatal
