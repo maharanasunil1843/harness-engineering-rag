@@ -215,6 +215,7 @@ async def query_stream(request: Request, body: QueryRequest):
             # ask_stream resolves follow-ups against history+summary, keys the
             # cache on the standalone query, and persists the turn.
             final_answer = None
+            streamed_tokens = False
             async with asyncio.timeout(_STREAM_TIMEOUT_S):
                 async for kind, payload in ask_stream(
                     body.query,
@@ -222,7 +223,12 @@ async def query_stream(request: Request, body: QueryRequest):
                     history=history,
                     summary=summary,
                 ):
-                    if kind == "intent":
+                    if kind == "token":
+                        streamed_tokens = True
+                        yield {"event": "token",
+                               "data": json.dumps({"text": payload})}
+                        await asyncio.sleep(0)
+                    elif kind == "intent":
                         intent = payload
                     elif kind == "status":
                         yield {"event": "status", "data": json.dumps(payload)}
@@ -249,14 +255,25 @@ async def query_stream(request: Request, body: QueryRequest):
             cache_hit = final_answer.cache_hit
             if cache_hit:
                 intent = "cache"
-            async for ev in _emit_answer(
-                final_answer.answer,
-                _sources_from_answer(final_answer),
-                final_answer.confidence,
-                final_answer.trace_id,
-                cache_hit,
-            ):
-                yield ev
+
+            sources = _sources_from_answer(final_answer)
+            if not streamed_tokens:
+                # Cache hit / no live synthesis: emit the answer now in big
+                # chunks (no typing delay).
+                ctokens = re.findall(r"\S+\s*", final_answer.answer)
+                for i in range(0, len(ctokens), 60):
+                    yield {"event": "token",
+                           "data": json.dumps({"text": "".join(ctokens[i : i + 60])})}
+            response = QueryResponse(
+                answer=final_answer.answer,
+                sources=sources,
+                confidence=final_answer.confidence,
+                trace_id=final_answer.trace_id,
+                latency_ms=(time.perf_counter() - t_start) * 1000,
+                cache_hit=cache_hit,
+                intent="cache" if cache_hit else intent,
+            )
+            yield {"event": "done", "data": response.model_dump_json()}
 
         except Exception as exc:
             error = True

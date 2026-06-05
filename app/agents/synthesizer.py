@@ -1,12 +1,14 @@
 """Multi-source answer synthesis with citations and confidence scoring."""
 import re
 import time
+from collections.abc import AsyncIterator
+from typing import Any
 
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.observability.tracing import traced, track_token_usage
+from app.observability.tracing import track_token_usage
 from app.retrieval.hybrid import RetrievedChunk
 from app.sql.agent import SQLResult
 
@@ -66,19 +68,14 @@ def _parse_confidence(text: str) -> float:
     return 0.5
 
 
-@traced("synthesizer")
-async def synthesize(
+def _build_request(
     query: str,
     retrieval_results: list[RetrievedChunk] | None,
     sql_result: SQLResult | None,
-    trace_id: str = "",
-    history: list[dict] | None = None,
-    summary: str | None = None,
-) -> SynthesizedAnswer:
-    t0 = time.perf_counter()
-    s = get_settings()
-    client = AsyncAnthropic(api_key=s.anthropic_api_key)
-
+    history: list[dict] | None,
+    summary: str | None,
+) -> tuple[str, list[dict]]:
+    """Build the synthesizer user message and the structured `sources` list."""
     source_blocks: list[str] = []
     sources: list[dict] = []
 
@@ -130,29 +127,92 @@ async def synthesize(
         + "Sources:\n\n"
         + "\n\n---\n\n".join(source_blocks)
     )
+    return user_content, sources
 
-    resp = await client.messages.create(
+
+# The trailing "Confidence: X" line is parsed into the confidence field — strip
+# it from the displayed/streamed/cached text. HOLDBACK chars at the tail are
+# buffered until the stream ends so a forming "Confidence:" marker never leaks.
+_CONFIDENCE_RE = re.compile(r"\s*Confidence:\s*[0-9]*\.?[0-9]+\s*$")
+_HOLDBACK = 32
+
+
+async def synthesize_stream(
+    query: str,
+    retrieval_results: list[RetrievedChunk] | None,
+    sql_result: SQLResult | None,
+    trace_id: str = "",
+    history: list[dict] | None = None,
+    summary: str | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
+    """Stream the answer token-by-token.
+
+    Yields ("token", text) as the model generates, then ("done",
+    SynthesizedAnswer). The trailing Confidence line is held back and stripped,
+    so it never reaches the client and the stored answer is clean.
+    """
+    t0 = time.perf_counter()
+    s = get_settings()
+    client = AsyncAnthropic(api_key=s.anthropic_api_key)
+    user_content, sources = _build_request(
+        query, retrieval_results, sql_result, history, summary
+    )
+
+    full = ""
+    emitted = 0
+    async with client.messages.stream(
         model=s.synthesizer_model,
         max_tokens=2048,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_content}],
-    )
+    ) as stream:
+        async for text in stream.text_stream:
+            full += text
+            safe_upto = len(full) - _HOLDBACK
+            if safe_upto > emitted:
+                yield ("token", full[emitted:safe_upto])
+                emitted = safe_upto
+        final_msg = await stream.get_final_message()
 
     track_token_usage(
         s.synthesizer_model,
-        resp.usage.input_tokens,
-        resp.usage.output_tokens,
+        final_msg.usage.input_tokens,
+        final_msg.usage.output_tokens,
         cost=0.0,
     )
 
-    answer_text = resp.content[0].text
-    confidence = _parse_confidence(answer_text)
-    latency_ms = (time.perf_counter() - t0) * 1000
+    confidence = _parse_confidence(full)
+    answer_text = _CONFIDENCE_RE.sub("", full).rstrip()
+    # Emit whatever clean tail wasn't flushed during streaming.
+    if emitted < len(answer_text):
+        yield ("token", answer_text[emitted:])
 
-    return SynthesizedAnswer(
-        answer=answer_text,
-        sources=sources,
-        confidence=confidence,
-        trace_id=trace_id,
-        latency_ms=latency_ms,
+    yield (
+        "done",
+        SynthesizedAnswer(
+            answer=answer_text,
+            sources=sources,
+            confidence=confidence,
+            trace_id=trace_id,
+            latency_ms=(time.perf_counter() - t0) * 1000,
+        ),
     )
+
+
+async def synthesize(
+    query: str,
+    retrieval_results: list[RetrievedChunk] | None,
+    sql_result: SQLResult | None,
+    trace_id: str = "",
+    history: list[dict] | None = None,
+    summary: str | None = None,
+) -> SynthesizedAnswer:
+    """Non-streaming wrapper: drain synthesize_stream and return the answer."""
+    answer: SynthesizedAnswer | None = None
+    async for kind, val in synthesize_stream(
+        query, retrieval_results, sql_result, trace_id, history, summary
+    ):
+        if kind == "done":
+            answer = val
+    assert answer is not None  # synthesize_stream always yields a final ("done", ...)
+    return answer

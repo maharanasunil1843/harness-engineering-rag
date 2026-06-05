@@ -11,12 +11,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
 from app.agents.conversation_summary import summarize_conversation
 from app.agents.query_rewriter import ClassifiedQuery, rewrite_and_classify
-from app.agents.synthesizer import SynthesizedAnswer, synthesize
+from app.agents.synthesizer import SynthesizedAnswer, synthesize_stream
 from app.config import get_settings
 from app.retrieval.cache import cache_get, cache_set
 from app.retrieval.cache_verify import verify_cache_match
@@ -154,16 +155,24 @@ async def _node_hybrid_workers(state: AgentState) -> dict[str, Any]:
 
 
 async def _node_synthesize(state: AgentState) -> dict[str, Any]:
+    # Stream tokens out via the custom stream channel as they're generated;
+    # get_stream_writer() is a no-op under ainvoke (the /query path). Answer the
+    # user's literal question, with the conversation for context.
+    writer = get_stream_writer()
+    answer: SynthesizedAnswer | None = None
     try:
-        # Answer the user's literal question, with the conversation for context.
-        answer = await synthesize(
+        async for kind, val in synthesize_stream(
             query=state["query"],
             retrieval_results=state.get("retrieval_results") or None,
             sql_result=state.get("sql_result"),
             trace_id=state["trace_id"],
             history=state.get("history"),
             summary=state.get("summary"),
-        )
+        ):
+            if kind == "token":
+                writer({"token": val})
+            else:
+                answer = val
         return {"answer": answer}
     except Exception as e:
         return {
@@ -357,9 +366,17 @@ async def ask_stream(
     cache_hit = False
     local_intent: str | None = None
 
-    # stream_mode="updates" yields {node_name: state_delta} after each node.
-    async for update in _graph.astream(state, stream_mode="updates"):
-        for node, delta in update.items():
+    # "updates" yields {node: state_delta} after each node; "custom" yields the
+    # tokens the synthesize node emits live. With a list of modes astream yields
+    # (mode, data) tuples.
+    async for mode, data in _graph.astream(state, stream_mode=["updates", "custom"]):
+        if mode == "custom":
+            tok = data.get("token") if isinstance(data, dict) else None
+            if tok:
+                yield ("token", tok)
+            continue
+
+        for node, delta in data.items():
             if not isinstance(delta, dict):
                 continue
 
